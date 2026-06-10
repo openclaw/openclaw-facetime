@@ -182,6 +182,7 @@ FACETIMEHELPER *plugin;
     BOOL didSetConversationAVMode = NO;
     BOOL didSetLocalParticipantMode = NO;
     BOOL didSetLocalParticipantModeViaXPC = NO;
+    BOOL didSetSendingAudio = NO;
     
     if ([conversation respondsToSelector:@selector(setAudioEnabled:)]) {
         [conversation setAudioEnabled:!muted];
@@ -213,6 +214,14 @@ FACETIMEHELPER *plugin;
         didStartAudio = YES;
     }
     if (!muted) {
+        if ([call respondsToSelector:@selector(setIsSendingAudio:)]) {
+            ((void (*)(id, SEL, BOOL))[call methodForSelector:@selector(setIsSendingAudio:)])(
+                call,
+                @selector(setIsSendingAudio:),
+                YES
+            );
+            didSetSendingAudio = YES;
+        }
         TUConversationManager *tuConversationManager = [[TUConversationManager alloc] init];
         if ([tuConversationManager respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
             [tuConversationManager setLocalParticipantAudioVideoMode:1 forConversationUUID:conversationUUID];
@@ -237,6 +246,7 @@ FACETIMEHELPER *plugin;
     result[@"conversation_audio_started"] = [NSNumber numberWithBool:didStartAudio];
     result[@"local_participant_audio_video_mode_set"] = [NSNumber numberWithBool:didSetLocalParticipantMode];
     result[@"local_participant_audio_video_mode_xpc_set"] = [NSNumber numberWithBool:didSetLocalParticipantModeViaXPC];
+    result[@"is_sending_audio_set"] = [NSNumber numberWithBool:didSetSendingAudio];
     return result;
 }
 

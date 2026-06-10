@@ -100,7 +100,7 @@ function soxOutputCommand(config: FaceTimeAudioPumpConfig): string[] {
     config.deviceName,
   ];
   if (outputGain !== 1) {
-    command.push("gain", "-n", String(outputGain));
+    command.push("gain", String(outputGain));
   }
   return command;
 }

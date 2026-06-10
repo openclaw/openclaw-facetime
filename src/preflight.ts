@@ -102,7 +102,7 @@ if [[ -x /usr/bin/caffeinate ]]; then /usr/bin/caffeinate -u -t 8 >/dev/null 2>&
 "$sox" -q -t coreaudio ${device} -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$tmp" trim 0 3 &
 recpid=$!
 sleep 0.3
-"$sox" -q -n -t coreaudio ${device} synth 2 sine 880 vol 0.9
+"$sox" -q -n -t coreaudio ${device} synth 2 sine 880 vol 0.2
 wait "$recpid" || true
 stat="$("$sox" -q -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$tmp" -n stat 2>&1)"
 rms="$(printf "%s\\n" "$stat" | awk '/RMS[[:space:]]+amplitude/ { print $3; exit }')"
@@ -140,11 +140,11 @@ source="$(mktemp -t openclaw-facetime-pcm-loopback-source.XXXXXX.raw)"
 cleanup() { rm -f "$capture" "$source"; }
 trap cleanup EXIT
 if [[ -x /usr/bin/caffeinate ]]; then /usr/bin/caffeinate -u -t 8 >/dev/null 2>&1 & fi
-"$sox" -q -n -t raw -r 24000 -c 1 -e signed-integer -b 16 -L "$source" synth 2 sine 880 vol 0.9
+"$sox" -q -n -t raw -r 24000 -c 1 -e signed-integer -b 16 -L "$source" synth 2 sine 880 vol 0.2
 "$sox" -q -t coreaudio ${device} -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" trim 0 3 &
 recpid=$!
 sleep 0.3
-"$sox" -q --buffer 4096 -t raw -r 24000 -c 1 -e signed-integer -b 16 -L "$source" -c 16 -t coreaudio ${device} gain -n 3
+"$sox" -q --buffer 4096 -t raw -r 24000 -c 1 -e signed-integer -b 16 -L "$source" -c 16 -t coreaudio ${device} gain 1
 wait "$recpid" || true
 stat="$("$sox" -q -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" -n stat 2>&1)"
 rms="$(printf "%s\\n" "$stat" | awk '/RMS[[:space:]]+amplitude/ { print $3; exit }')"

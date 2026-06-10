@@ -40,6 +40,10 @@ EOF
   exit 1
 fi
 
+unique_dylib="${HOME}/Library/Containers/com.apple.FaceTime/Data/tmp/FaceTimeHelper-$(date +%Y%m%d%H%M%S)-$$.dylib"
+cp "${dylib}" "${unique_dylib}"
+dylib="${unique_dylib}"
+
 target_pid="${FACETIME_HELPER_PID:-}"
 target_name="FaceTime app"
 
