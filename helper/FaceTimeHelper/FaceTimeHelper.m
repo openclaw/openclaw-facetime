@@ -319,6 +319,20 @@ FACETIMEHELPER *plugin;
             return;
         }
         
+        // Keep the uplink closed until the Node bridge verifies that this exact
+        // call process is using OpenClaw-Mic. This prevents a physical-mic leak
+        // during the short interval between answer and Core Audio route setup.
+        [call setMuted:YES];
+        [call setUplinkMuted:YES];
+        TUConversation *conversation = [[TUCallCenter sharedInstance] activeConversationForCall:call];
+        NSUUID *conversationUUID = [conversation UUID];
+        if (conversationUUID != nil) {
+            TUConversationManager *conversationManager = [[TUConversationManager alloc] init];
+            if ([conversationManager respondsToSelector:@selector(setUplinkMuted:forPendingConversationWithUUID:)]) {
+                void (*setPendingUplinkMuted)(id, SEL, BOOL, id) = (void (*)(id, SEL, BOOL, id))[conversationManager methodForSelector:@selector(setUplinkMuted:forPendingConversationWithUUID:)];
+                setPendingUplinkMuted(conversationManager, @selector(setUplinkMuted:forPendingConversationWithUUID:), YES, conversationUUID);
+            }
+        }
         [[TUCallCenter sharedInstance] answerOrJoinCall:call];
         if (transaction != nil) {
             [controller sendMessage: @{@"transactionId": transaction}];
@@ -336,6 +350,25 @@ FACETIMEHELPER *plugin;
         [[TUCallCenter sharedInstance] disconnectCall:call];
         if (transaction != nil) {
             [controller sendMessage: @{@"transactionId": transaction}];
+        }
+    } else if ([event isEqualToString:@"safety-mute"]) {
+        TUCall *call = [[TUCallCenter sharedInstance] callWithCallUUID:(data[@"callUUID"])];
+        if (call == nil) {
+            if (transaction != nil) {
+                [controller sendMessage: @{ @"transactionId": transaction, @"error": @"Call not found!" }];
+            }
+            return;
+        }
+        [call setDownlinkMuted:YES];
+        [call setMuted:YES];
+        [call setUplinkMuted:YES];
+        if (transaction != nil) {
+            [controller sendMessage: @{
+                @"transactionId": transaction,
+                @"downlink_muted": [NSNumber numberWithBool:[call isDownlinkMuted]],
+                @"muted": [NSNumber numberWithBool:[call isMuted]],
+                @"is_uplink_muted": [NSNumber numberWithBool:[call isUplinkMuted]],
+            }];
         }
     } else if ([event isEqualToString:@"set-muted"]) {
         TUCall *call = [[TUCallCenter sharedInstance] callWithCallUUID:(data[@"callUUID"])];

@@ -1,166 +1,180 @@
 # OpenClaw FaceTime
 
-Standalone FaceTime voice carrier for OpenClaw/Lobster.
+This repository is the canonical FaceTime voice plugin for OpenClaw and Lobster.
 
-This repository contains:
-
-- `@openclaw/facetime` OpenClaw plugin at the repo root.
-- `helper/FaceTimeHelper.xcodeproj`, a standalone FaceTime-injected helper bundle that connects directly to the plugin socket.
-
-Runtime path:
+It combines call control, OpenClaw agent consultation, and the audio path proven on current macOS:
 
 ```text
-FaceTime.app -> FaceTimeHelper.dylib -> localhost:45670+(uid-501) -> OpenClaw facetime plugin
+caller -> FaceTime or Phone -> Core Audio process tap -> OpenClaw Realtime
+caller <- FaceTime or Phone <- OpenClaw-Mic <- OpenClaw-Feed <- OpenClaw Realtime
 ```
 
-No external server or app is required.
+The injected FaceTime helper owns call events, answering, transmission, and hangup. The Swift capture helper accepts only Apple-signed FaceTime, Phone, or `avconferenced` identities and taps the single process reporting active audio output. Model speech is written to the output-only `OpenClaw-Feed`, then mirrored by the paired driver to the input-only `OpenClaw-Mic` selected in the call app.
 
-## Development Checks
+This avoids the duplex BlackHole route that current FaceTime Voice Processing suppresses. The plugin never changes the Mac's default input or output devices.
 
-From this repo, after installing dependencies:
+## Requirements
 
-```bash
+- macOS 14.4 or later
+- FaceTime signed in
+- Xcode
+- CocoaPods for the injected helper
+- SoX
+- an OpenAI Platform API key with Realtime access configured in OpenClaw
+- consent from everyone on the call before capturing or processing audio
+
+Install local dependencies:
+
+```sh
+brew install cocoapods sox
 pnpm install
-pnpm typecheck
-pnpm test
 ```
 
-## Helper Build
+## Build the audio path
 
-The helper requires full Xcode, CocoaPods, SoX, BlackHole, and switchaudio-osx:
+Build and sign the Core Audio process-tap helper:
 
-```bash
-brew install cocoapods sox switchaudio-osx
+```sh
+pnpm build:capture
 ```
 
-Install BlackHole 16ch separately and reboot if macOS asks for it. Then install helper pods:
+OpenClaw installs npm plugins with lifecycle scripts disabled. On first plugin activation, the plugin checks for this helper and builds it from the packaged Swift source when missing. Xcode must therefore remain installed on the Lobster Mac. The explicit command above is useful for setup verification and development.
 
-```bash
-cd helper
-pod install
-open FaceTimeHelper.xcworkspace
+Build the pinned BlackHole v0.7.1 source as the paired OpenClaw driver, then install it:
+
+```sh
+pnpm build:driver
+pnpm install:driver
+system_profiler SPAudioDataType | grep -E 'OpenClaw-(Mic|Feed)'
 ```
 
-For a command-line local macOS build:
+Driver installation prompts for the administrator password, restarts Core Audio, and disconnects active calls.
 
-```bash
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
-  xcodebuild -workspace FaceTimeHelper.xcworkspace -scheme FaceTimeHelper -configuration Debug ARCHS=arm64e build
-```
+The first process-tap check prompts for Screen & System Audio Recording permission. Grant it to the app that runs OpenClaw, quit that app completely, reopen it, and rerun preflight.
 
-FaceTime.app itself is Mac Catalyst on current macOS. For live injection into FaceTime.app, build and stage the Mac Catalyst helper:
+## Driver licensing boundary
 
-```bash
+The generated `OpenClawBridge.driver` is a separate modified build of GPL-3.0 BlackHole. It is ignored by Git and excluded from the npm package. The build script pins and verifies the upstream archive, then records the changed identity, device names, visibility, and input/output capabilities in its compiler flags.
+
+Do not commit or silently distribute the generated driver. Distribution requires compliance with BlackHole's GPL-3.0 terms, a separate license from Existential Audio, or a replacement driver with a compatible license.
+
+## Build the plugin and helper
+
+```sh
+pnpm build
 pnpm build:helper:macabi
 ```
 
-The helper connects to `localhost` on `45670 + uid - 501`, matching the plugin default `helperPort`.
+Open FaceTime, then inject the helper from an interactive Terminal:
 
-## Live Test
-
-Start OpenClaw with the plugin installed and enabled:
-
-```bash
-openclaw gateway run --verbose
-```
-
-Make sure Developer Tools attach permission is enabled from an interactive Terminal:
-
-```bash
-sudo /usr/sbin/DevToolsSecurity -enable
-```
-
-Open FaceTime, then inject the helper:
-
-```bash
-pnpm build:helper:macabi
+```sh
 pnpm inject:helper
 ```
 
-On current macOS, LLDB attach into FaceTime must be run from an interactive Terminal. A non-interactive shell may fail with `cannot get permission to debug processes`.
+If a non-interactive agent owns the terminal, use:
 
-From non-interactive agent sessions, use this wrapper to open Terminal and run the same injection command interactively:
-
-```bash
+```sh
 pnpm inject:helper:terminal
 ```
 
-After injection, verify that the plugin sees the helper before placing a call:
+The helper connects to `127.0.0.1` on `45670 + uid - 501`.
 
-```bash
-openclaw gateway call facetime.status --json
+## Configure OpenClaw
+
+The plugin must be installed, allowlisted, enabled, and given at least one allowed FaceTime handle. Its Realtime provider defaults to OpenAI `gpt-realtime-2.1` with the `marin` voice.
+
+Older local builds used `plugins.entries.facetime.config.audio` for duplex BlackHole routing. That property is retired. Migrate it once with:
+
+```sh
+openclaw doctor --fix
 ```
 
-Expected idle output includes:
+The plugin doctor removes only the obsolete audio object and preserves the rest of the FaceTime configuration.
 
-```json
-{
-  "enabled": true,
-  "helperConnected": true,
-  "currentAudioDefaults": {
-    "inputDeviceUid": "MacBook Air Microphone",
-    "outputDeviceUid": "MacBook Air Speakers"
-  },
-  "calls": []
-}
-```
+OpenAI Realtime uses Platform API billing. A ChatGPT subscription or Codex OAuth login does not replace the Platform API key.
 
-If `helperConnected` is `false`, the gateway is listening but FaceTime has not loaded `FaceTimeHelper.dylib`. Re-run `pnpm inject:helper` from an interactive Terminal after opening FaceTime.
+## Route FaceTime or Phone
 
-Before placing a live call, run the preflight check:
+Set this route once in the app that owns the call:
 
-```bash
+- microphone: `OpenClaw-Mic`
+- output: physical speakers or headphones
+- macOS system input: any physical microphone
+- macOS system output: any physical device
+
+FaceTime video calls use FaceTime. FaceTime audio calls use Phone on current macOS. The helper answers with the uplink muted, verifies that `OpenClaw-Mic` is the actual active call process's only input device and that its outputs are physical, then enables transmission. It keeps re-resolving the audio owner and checking both routes during the call, then hangs up if anything changes.
+
+Do not select an Aggregate, Multi-Output, BlackHole, `OpenClaw-Feed`, or `OpenClaw-Mic` device as the call output.
+
+The Core Audio process tap starts before auto-answer and uses per-process mute behavior. Caller audio is still captured for OpenClaw, but the call process sends nothing to speakers or headphones. This suppression follows the process across volume and default-output changes and does not change the Mac's global mute state.
+
+If carrier hangup fails, the helper safety-mutes both directions, retains the process tap, and retries instead of dropping local protection around a still-connected call.
+
+## Preflight and live test
+
+Start the OpenClaw gateway with the plugin enabled, inject the helper, then run:
+
+```sh
 openclaw gateway call facetime.preflight --json
 ```
 
-`ok` must be `true`. The checks cover helper connection, current audio defaults, BlackHole input/output visibility, BlackHole synth loopback, pump-style PCM loopback, SoX, FaceTime.app, and realtime provider credentials.
+Required checks cover:
 
-The expected path is:
+- helper connection
+- SoX
+- signed capture helper
+- FaceTime or Phone process
+- `OpenClaw-Mic` and `OpenClaw-Feed`
+- physical system output
+- live Core Audio process tap and TCC permission
+- `OpenClaw-Feed` to `OpenClaw-Mic` signal
+- Realtime provider credentials
 
-```text
-FaceTime helper connects -> facetime plugin logs helper events -> whitelisted incoming call is answered -> audio routes through BlackHole -> realtime bridge starts
+The call-specific `OpenClaw-Mic` check happens when the actual FaceTime or Phone audio process becomes active.
+
+Place a whitelisted call and inspect status:
+
+```sh
+openclaw gateway call facetime.status --json
 ```
 
-Outgoing FaceTime audio URLs currently still require the user to click the FaceTime call/join prompt on the Lobster Mac. During an active call, the plugin switches the system default input/output to BlackHole and best-effort selects `BlackHole 16ch` in FaceTime's own Video menu for Microphone and Output. If audio is still silent, check that the FaceTime call HUD microphone button is not muted.
+An active call should report `audioReady: true`, `realtimeActive: true`, `processOutputSuppressed: true`, and the paired transport names.
 
-To isolate the FaceTime audio carrier without starting a realtime model session, use the test audio method while the call is connected:
+Send a deterministic test phrase through the same output-only path:
 
-```bash
-openclaw gateway call facetime.testAudio --params '{"phrase":"This is OpenClaw speaking through FaceTime."}' --json
+```sh
+openclaw gateway call facetime.testAudio \
+  --params '{"phrase":"This is OpenClaw speaking through FaceTime."}' \
+  --json
 ```
 
-During a call, `facetime.status` reports per-call `audioRouted`, `audioDevices`, and `lastRoutingError`. `audioRouted` must be `true` and both devices should be `BlackHole 16ch` before testing realtime speech.
+Run the guided acceptance sequence with the user present:
 
-For a repeatable live smoke-test sequence:
-
-```bash
-scripts/live-smoke.sh
-scripts/live-smoke.sh --test-audio
-scripts/live-smoke.sh --test-audio --hangup
-```
-
-The script does not place calls and exits immediately if preflight returns `ok: false`. Run it with `--test-audio` only after the FaceTime call is connected.
-
-For the full Phase 1 acceptance pass with the user present:
-
-```bash
+```sh
 scripts/live-acceptance.sh
 ```
 
-This script also does not place calls. It requires preflight success, waits for
-the whitelisted iPhone call, checks that the active call is routed through
-BlackHole, sends test audio, captures realtime/tool-use/barge-in status snapshots,
-and saves a log under
-`${TMPDIR:-/tmp}/openclaw-facetime-acceptance/`.
+Hang up through OpenClaw:
 
-To hang up the active FaceTime call from OpenClaw during testing:
-
-```bash
+```sh
 openclaw gateway call facetime.hangup --json
 ```
 
-To target a specific call:
+## Development checks
 
-```bash
-openclaw gateway call facetime.hangup --params '{"callUUID":"..."}' --json
+```sh
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm build:capture
+npm pack --dry-run
 ```
+
+Generated `dist/`, `native/.build/`, and `native-driver/.build/` outputs are ignored. The npm package includes the TypeScript build, native capture source, helper source, and setup scripts, but excludes generated native binaries and drivers.
+
+## Current limits
+
+- This is a dedicated AI side of a private call. Selecting `OpenClaw-Mic` replaces the Mac's physical microphone for that call app.
+- One bridged call is supported at a time.
+- FaceTime video and Phone-owned FaceTime audio require separate live acceptance passes.
+- A live remote participant is required to prove that app-specific routing reaches the caller.

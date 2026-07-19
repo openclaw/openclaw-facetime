@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import type { Writable } from "node:stream";
 import type { RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import { formatErrorMessage } from "./errors.js";
+import { PlaybackClock } from "./playback-clock.js";
 
 type PumpProcess = {
   pid?: number;
@@ -21,41 +22,55 @@ type PumpProcess = {
 type SpawnFn = (
   command: string,
   args: string[],
-  options: { stdio: ["pipe" | "ignore", "pipe" | "ignore", "pipe" | "ignore"] },
+  options: {
+    env: NodeJS.ProcessEnv;
+    stdio: ["pipe" | "ignore", "pipe" | "ignore", "pipe" | "ignore"];
+  },
 ) => PumpProcess;
 
-const SOX_COMMAND = ["/opt/homebrew/bin/sox", "/usr/local/bin/sox"].find((path) =>
-  existsSync(path),
-) ?? "sox";
+export const SOX_COMMAND =
+  ["/opt/homebrew/bin/sox", "/usr/local/bin/sox"].find((path) => existsSync(path)) ?? "sox";
 const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
+export const FACETIME_AUDIO_SAMPLE_RATE_HZ = 24_000;
+export const OPENCLAW_FEED_DEVICE = "OpenClaw-Feed";
+export const OPENCLAW_MIC_DEVICE = "OpenClaw-Mic";
+export const MAX_PLAYBACK_BUFFERED_BYTES = 2 * 1024 * 1024;
 
-export type FaceTimeAudioPumpConfig = {
-  deviceName: string;
-  sampleRateHz: number;
-  bufferBytes?: number;
-  outputChannels?: number;
-  outputGain?: number;
-};
-
-export type FaceTimeAudioPump = {
+export type FaceTimeAudioOutput = {
   writeOutputAudio(audio: Buffer): void;
   clearOutputAudio(): void;
+  generatedAudioMs(): number;
+  playedAudioMs(): number;
+  queuedAudioMs(): number;
   stop(): Promise<void>;
 };
 
-function soxInputCommand(config: FaceTimeAudioPumpConfig): string[] {
+export type FaceTimeAudioPump = FaceTimeAudioOutput & {
+  suppressionReady(): Promise<void>;
+  routeReady(): Promise<void>;
+  processOutputSuppressed(): boolean;
+};
+
+export function sanitizedAudioChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(
+      ([key]) => !/(?:API_?KEY|AUTH|CREDENTIAL|PASSWORD|SECRET|TOKEN)/iu.test(key),
+    ),
+  );
+}
+
+export function buildSoxOutputArguments(
+  deviceName = OPENCLAW_FEED_DEVICE,
+  bufferBytes = 480,
+): string[] {
   return [
-    SOX_COMMAND,
     "-q",
     "--buffer",
-    String(config.bufferBytes ?? 4096),
-    "-t",
-    "coreaudio",
-    config.deviceName,
+    String(bufferBytes),
     "-t",
     "raw",
     "-r",
-    String(config.sampleRateHz),
+    String(FACETIME_AUDIO_SAMPLE_RATE_HZ),
     "-c",
     "1",
     "-e",
@@ -64,53 +79,10 @@ function soxInputCommand(config: FaceTimeAudioPumpConfig): string[] {
     "16",
     "-L",
     "-",
-  ];
-}
-
-function soxOutputCommand(config: FaceTimeAudioPumpConfig): string[] {
-  const outputChannels =
-    Number.isInteger(config.outputChannels) && (config.outputChannels ?? 0) > 0
-      ? String(config.outputChannels)
-      : "16";
-  const outputGain =
-    typeof config.outputGain === "number" && Number.isFinite(config.outputGain)
-      ? config.outputGain
-      : 3;
-  const command = [
-    SOX_COMMAND,
-    "-q",
-    "--buffer",
-    String(config.bufferBytes ?? 4096),
-    "-t",
-    "raw",
-    "-r",
-    String(config.sampleRateHz),
-    "-c",
-    "1",
-    "-e",
-    "signed-integer",
-    "-b",
-    "16",
-    "-L",
-    "-",
-    "-c",
-    outputChannels,
     "-t",
     "coreaudio",
-    config.deviceName,
+    deviceName,
   ];
-  if (outputGain !== 1) {
-    command.push("gain", String(outputGain));
-  }
-  return command;
-}
-
-function splitCommand(argv: string[]): { command: string; args: string[] } {
-  const [command, ...args] = argv;
-  if (!command) {
-    throw new Error("audio command must not be empty");
-  }
-  return { command, args };
 }
 
 async function terminateProcess(proc: PumpProcess, signal: NodeJS.Signals = "SIGTERM") {
@@ -125,7 +97,7 @@ async function terminateProcess(proc: PumpProcess, signal: NodeJS.Signals = "SIG
     });
   });
   try {
-    proc.stdin?.end?.();
+    proc.stdin?.end();
   } catch {
     // The process may already have closed stdin.
   }
@@ -159,111 +131,109 @@ async function terminateProcess(proc: PumpProcess, signal: NodeJS.Signals = "SIG
   ]);
 }
 
-export function startFaceTimeAudioPump(params: {
-  config: FaceTimeAudioPumpConfig;
+export function startFaceTimeAudioOutput(params: {
   logger: RuntimeLogger;
-  onInputAudio: (audio: Buffer) => void;
-  onError?: (error: Error) => void;
+  deviceName?: string;
+  bufferBytes?: number;
+  onError?: (error: Error) => boolean | void | Promise<boolean | void>;
+  onPlaybackDrained?: () => void;
   spawn?: SpawnFn;
-}): FaceTimeAudioPump {
+}): FaceTimeAudioOutput {
   const spawnFn: SpawnFn =
     params.spawn ??
     ((command, args, options) => spawn(command, args, options) as unknown as PumpProcess);
-  const input = splitCommand(soxInputCommand(params.config));
-  const output = splitCommand(soxOutputCommand(params.config));
-  const spawnOutput = () =>
-    spawnFn(output.command, output.args, { stdio: ["pipe", "ignore", "pipe"] });
-  const wakeProcess = existsSync(CAFFEINATE_COMMAND)
-    ? spawnFn(CAFFEINATE_COMMAND, ["-d", "-i"], { stdio: ["ignore", "ignore", "pipe"] })
-    : undefined;
-  const inputProcess = spawnFn(input.command, input.args, { stdio: ["ignore", "pipe", "pipe"] });
-  let outputProcess = spawnOutput();
+  const childEnv = sanitizedAudioChildEnv();
+  const outputArgs = buildSoxOutputArguments(params.deviceName, params.bufferBytes);
+  const clock = new PlaybackClock();
+  let outputProcess: PumpProcess;
   let stopped = false;
+  let drainTimer: NodeJS.Timeout | undefined;
 
-  const fail = (label: string) => (error: Error) => {
+  const cancelDrainTimer = () => {
+    if (drainTimer) {
+      clearTimeout(drainTimer);
+      drainTimer = undefined;
+    }
+  };
+  const schedulePlaybackDrain = () => {
+    cancelDrainTimer();
+    const delayMs = Math.ceil(clock.millisecondsUntilDrained());
+    drainTimer = setTimeout(
+      () => {
+        drainTimer = undefined;
+        if (!stopped && clock.queuedAudioMs() === 0) {
+          params.onPlaybackDrained?.();
+        } else if (!stopped) {
+          schedulePlaybackDrain();
+        }
+      },
+      Math.max(1, delayMs),
+    );
+    drainTimer.unref?.();
+  };
+
+  const fail = (error: Error) => {
     if (stopped) {
       return;
     }
-    params.logger.warn(`[facetime] ${label} failed: ${formatErrorMessage(error)}`);
-    params.onError?.(error);
-    void stop();
-  };
-
-  const attachOutputHandlers = (proc: PumpProcess) => {
-    proc.on("error", (error) => {
-      if (proc === outputProcess) {
-        fail("audio output command")(error);
+    params.logger.warn(`[facetime] audio output failed: ${formatErrorMessage(error)}`);
+    void Promise.resolve(params.onError?.(error)).then((safeToStop) => {
+      if (safeToStop !== false) {
+        return stop();
       }
     });
-    proc.stdin?.on?.("error", (error: Error) => {
+  };
+  const spawnOutput = () => {
+    const proc = spawnFn(SOX_COMMAND, outputArgs, {
+      env: childEnv,
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    proc.on("error", (error) => {
       if (proc === outputProcess) {
-        fail("audio output command")(error);
+        fail(error);
+      }
+    });
+    proc.stdin?.on("error", (error) => {
+      if (proc === outputProcess) {
+        fail(error);
       }
     });
     proc.on("exit", (code, signal) => {
       if (!stopped && proc === outputProcess) {
-        fail("audio output command")(new Error(`exited (${code ?? signal ?? "done"})`));
+        fail(new Error(`exited (${code ?? signal ?? "done"})`));
       }
     });
     proc.stderr?.on("data", (chunk) => {
       params.logger.debug?.(`[facetime] audio output: ${String(chunk).trim()}`);
     });
+    return proc;
   };
-
   const stop = async () => {
     if (stopped) {
       return;
     }
     stopped = true;
-    await Promise.all([
-      terminateProcess(inputProcess),
-      terminateProcess(outputProcess),
-      wakeProcess ? terminateProcess(wakeProcess) : Promise.resolve(),
-    ]);
+    cancelDrainTimer();
+    await terminateProcess(outputProcess);
   };
 
-  wakeProcess?.on("error", (error) => {
-    params.logger.debug?.(`[facetime] caffeinate command failed: ${formatErrorMessage(error)}`);
-  });
-  wakeProcess?.on("exit", (code, signal) => {
-    if (!stopped) {
-      params.logger.debug?.(
-        `[facetime] caffeinate command exited (${code ?? signal ?? "done"})`,
-      );
-    }
-  });
-  wakeProcess?.stderr?.on("data", (chunk) => {
-    params.logger.debug?.(`[facetime] caffeinate: ${String(chunk).trim()}`);
-  });
-
-  inputProcess.on("error", fail("audio input command"));
-  inputProcess.on("exit", (code, signal) => {
-    if (!stopped) {
-      fail("audio input command")(new Error(`exited (${code ?? signal ?? "done"})`));
-    }
-  });
-  inputProcess.stderr?.on("data", (chunk) => {
-    params.logger.debug?.(`[facetime] audio input: ${String(chunk).trim()}`);
-  });
-  inputProcess.stdout?.on("data", (chunk) => {
-    if (!stopped) {
-      const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      if (audio.byteLength > 0) {
-        params.onInputAudio(audio);
-      }
-    }
-  });
-  attachOutputHandlers(outputProcess);
-
+  outputProcess = spawnOutput();
   return {
     writeOutputAudio(audio) {
-      if (stopped) {
+      if (stopped || audio.byteLength === 0) {
+        return;
+      }
+      const bufferedBytes = outputProcess.stdin?.writableLength ?? 0;
+      if (bufferedBytes + audio.byteLength > MAX_PLAYBACK_BUFFERED_BYTES) {
+        fail(new Error("playback queue exceeded 2 MiB"));
         return;
       }
       try {
+        clock.append(audio.byteLength);
         outputProcess.stdin?.write(audio);
+        schedulePlaybackDrain();
       } catch (error) {
-        fail("audio output command")(error as Error);
+        fail(error as Error);
       }
     },
     clearOutputAudio() {
@@ -272,9 +242,202 @@ export function startFaceTimeAudioPump(params: {
       }
       const previous = outputProcess;
       outputProcess = spawnOutput();
-      attachOutputHandlers(outputProcess);
+      cancelDrainTimer();
+      clock.reset();
       void terminateProcess(previous, "SIGKILL");
     },
+    generatedAudioMs() {
+      return clock.totalGeneratedAudioMs();
+    },
+    playedAudioMs() {
+      return clock.playedAudioMs();
+    },
+    queuedAudioMs() {
+      return clock.queuedAudioMs();
+    },
+    stop,
+  };
+}
+
+export function startFaceTimeAudioPump(params: {
+  captureBinary: string;
+  logger: RuntimeLogger;
+  onInputAudio: (audio: Buffer) => void;
+  onError?: (error: Error) => boolean | void | Promise<boolean | void>;
+  onPlaybackDrained?: () => void;
+  spawn?: SpawnFn;
+}): FaceTimeAudioPump {
+  const spawnFn: SpawnFn =
+    params.spawn ??
+    ((command, args, options) => spawn(command, args, options) as unknown as PumpProcess);
+  const childEnv = sanitizedAudioChildEnv();
+  let stopped = false;
+  let captureSuppressionActive = false;
+  let captureFailureReported = false;
+  const output = startFaceTimeAudioOutput({
+    logger: params.logger,
+    onError: params.onError,
+    onPlaybackDrained: params.onPlaybackDrained,
+    spawn: spawnFn,
+  });
+  const captureProcess = spawnFn(params.captureBinary, [], {
+    env: childEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let captureReadySettled = false;
+  let routeReadySettled = false;
+  let captureStderr = "";
+  let resolveCaptureReady = () => {};
+  let rejectCaptureReady = (_error: Error) => {};
+  const captureReadyPromise = new Promise<void>((resolve, reject) => {
+    resolveCaptureReady = resolve;
+    rejectCaptureReady = reject;
+  });
+  let resolveRouteReady = () => {};
+  let rejectRouteReady = (_error: Error) => {};
+  const routeReadyPromise = new Promise<void>((resolve, reject) => {
+    resolveRouteReady = resolve;
+    rejectRouteReady = reject;
+  });
+  // A caller may stop immediately after spawn without awaiting readiness.
+  void captureReadyPromise.catch(() => {});
+  void routeReadyPromise.catch(() => {});
+  const settleCaptureReady = (error?: Error) => {
+    if (captureReadySettled) {
+      return;
+    }
+    captureReadySettled = true;
+    clearTimeout(captureReadyTimer);
+    if (error) {
+      rejectCaptureReady(error);
+    } else {
+      resolveCaptureReady();
+    }
+  };
+  const settleRouteReady = (error?: Error) => {
+    if (routeReadySettled) {
+      return;
+    }
+    routeReadySettled = true;
+    clearTimeout(routeReadyTimer);
+    if (error) {
+      rejectRouteReady(error);
+    } else {
+      resolveRouteReady();
+    }
+  };
+  const captureReadyTimer = setTimeout(() => {
+    const error = new Error("FaceTime process-tap capture did not become ready within 10 seconds");
+    settleCaptureReady(error);
+    void Promise.resolve(params.onError?.(error)).then((safeToStop) => {
+      if (safeToStop !== false) {
+        return stop();
+      }
+    });
+  }, 10_000);
+  captureReadyTimer.unref?.();
+  const routeReadyTimer = setTimeout(() => {
+    const error = new Error("FaceTime input route was not verified within 15 seconds");
+    settleRouteReady(error);
+    void Promise.resolve(params.onError?.(error)).then((safeToStop) => {
+      if (safeToStop !== false) {
+        return stop();
+      }
+    });
+  }, 15_000);
+  routeReadyTimer.unref?.();
+  const wakeProcess = existsSync(CAFFEINATE_COMMAND)
+    ? spawnFn(
+        CAFFEINATE_COMMAND,
+        ["-d", "-i", ...(captureProcess.pid ? ["-w", String(captureProcess.pid)] : [])],
+        {
+          env: childEnv,
+          stdio: ["ignore", "ignore", "pipe"],
+        },
+      )
+    : undefined;
+
+  const fail = (label: string) => (error: Error) => {
+    if (stopped) {
+      return;
+    }
+    params.logger.warn(`[facetime] ${label} failed: ${formatErrorMessage(error)}`);
+    settleCaptureReady(error);
+    settleRouteReady(error);
+    void Promise.resolve(params.onError?.(error)).then((safeToStop) => {
+      if (safeToStop !== false) {
+        return stop();
+      }
+    });
+  };
+  const stop = async () => {
+    if (stopped) {
+      return;
+    }
+    stopped = true;
+    captureSuppressionActive = false;
+    settleCaptureReady(new Error("FaceTime process-tap capture stopped before becoming ready"));
+    settleRouteReady(new Error("FaceTime input route stopped before verification"));
+    await Promise.all([
+      terminateProcess(captureProcess),
+      output.stop(),
+      wakeProcess ? terminateProcess(wakeProcess) : Promise.resolve(),
+    ]);
+  };
+
+  wakeProcess?.on("error", (error) => {
+    params.logger.debug?.(`[facetime] caffeinate command failed: ${formatErrorMessage(error)}`);
+  });
+  wakeProcess?.stderr?.on("data", (chunk) => {
+    params.logger.debug?.(`[facetime] caffeinate: ${String(chunk).trim()}`);
+  });
+  captureProcess.on("error", (error) => {
+    captureSuppressionActive = false;
+    fail("FaceTime process-tap capture")(error);
+  });
+  captureProcess.on("exit", (code, signal) => {
+    captureSuppressionActive = false;
+    if (!stopped) {
+      fail("FaceTime process-tap capture")(new Error(`exited (${code ?? signal ?? "done"})`));
+    }
+  });
+  captureProcess.stderr?.on("data", (chunk) => {
+    const message = String(chunk);
+    captureStderr = `${captureStderr}${message}`.slice(-4096);
+    if (captureStderr.includes("started FaceTime process tap")) {
+      captureSuppressionActive = true;
+      settleCaptureReady();
+    }
+    if (captureStderr.includes("verified OpenClaw-Mic input route")) {
+      settleRouteReady();
+    }
+    if (
+      !captureFailureReported &&
+      /facetime-audio-capture: fatal(?:-safety-retained)?:/u.test(captureStderr)
+    ) {
+      captureFailureReported = true;
+      fail("FaceTime process-tap capture")(new Error(message.trim()));
+    }
+    params.logger.debug?.(`[facetime] capture: ${message.trim()}`);
+  });
+  captureProcess.stdout?.on("data", (chunk) => {
+    if (!stopped) {
+      const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      if (audio.byteLength > 0) {
+        params.onInputAudio(audio);
+      }
+    }
+  });
+
+  return {
+    suppressionReady: async () => await captureReadyPromise,
+    routeReady: async () => await routeReadyPromise,
+    processOutputSuppressed: () => captureSuppressionActive,
+    writeOutputAudio: output.writeOutputAudio,
+    clearOutputAudio: output.clearOutputAudio,
+    generatedAudioMs: output.generatedAudioMs,
+    playedAudioMs: output.playedAudioMs,
+    queuedAudioMs: output.queuedAudioMs,
     stop,
   };
 }

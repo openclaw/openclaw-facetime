@@ -90,46 +90,31 @@ status_has_call() {
   '
 }
 
-status_audio_defaults_match_baseline() {
-  local baseline_json="$1"
-  BASELINE_STATUS_JSON="$baseline_json" node -e '
-    const fs = require("node:fs");
-    const baseline = JSON.parse(process.env.BASELINE_STATUS_JSON || "{}");
-    const status = JSON.parse(fs.readFileSync(0, "utf8"));
-    const baselineDefaults = baseline && typeof baseline === "object" ? baseline.currentAudioDefaults : undefined;
-    const defaults = status && typeof status === "object" ? status.currentAudioDefaults : undefined;
-    const baselineInput = baselineDefaults && typeof baselineDefaults === "object" ? String(baselineDefaults.inputDeviceUid || "") : "";
-    const baselineOutput = baselineDefaults && typeof baselineDefaults === "object" ? String(baselineDefaults.outputDeviceUid || "") : "";
-    const input = defaults && typeof defaults === "object" ? String(defaults.inputDeviceUid || "") : "";
-    const output = defaults && typeof defaults === "object" ? String(defaults.outputDeviceUid || "") : "";
-    process.exit(baselineInput && baselineOutput && input === baselineInput && output === baselineOutput ? 0 : 1);
-  '
-}
-
-status_audio_defaults_not_blackhole() {
-  node -e '
-    const fs = require("node:fs");
-    const status = JSON.parse(fs.readFileSync(0, "utf8"));
-    const defaults = status && typeof status === "object" ? status.currentAudioDefaults : undefined;
-    const input = defaults && typeof defaults === "object" ? String(defaults.inputDeviceUid || "") : "";
-    const output = defaults && typeof defaults === "object" ? String(defaults.outputDeviceUid || "") : "";
-    process.exit(input && output && !input.includes("BlackHole") && !output.includes("BlackHole") ? 0 : 1);
-  '
-}
-
-status_has_routed_blackhole_call() {
+status_has_ready_paired_call() {
   node -e '
     const fs = require("node:fs");
     const status = JSON.parse(fs.readFileSync(0, "utf8"));
     const calls = Array.isArray(status.calls) ? status.calls : [];
     const ok = calls.some((call) => {
-      const devices = call && typeof call === "object" ? call.audioDevices : undefined;
-      return call.audioRouted === true
-        && devices
-        && String(devices.inputDeviceUid || "").includes("BlackHole")
-        && String(devices.outputDeviceUid || "").includes("BlackHole");
+      const transport = call && typeof call === "object" ? call.audioTransport : undefined;
+      return call.audioReady === true
+        && call.realtimeActive === true
+        && transport
+        && transport.feedDevice === "OpenClaw-Feed"
+        && transport.microphoneDevice === "OpenClaw-Mic"
+        && transport.processInputVerified === true
+        && transport.processOutputSuppressed === true;
     });
-    process.exit(ok ? 0 : 1);
+    process.exit(ok && status.processOutputSuppressed === true ? 0 : 1);
+  '
+}
+
+status_bridge_is_idle() {
+  node -e '
+    const fs = require("node:fs");
+    const status = JSON.parse(fs.readFileSync(0, "utf8"));
+    const calls = Array.isArray(status.calls) ? status.calls : [];
+    process.exit(calls.length === 0 && status.processOutputSuppressed === false ? 0 : 1);
   '
 }
 
@@ -161,6 +146,9 @@ require_yes() {
 
 echo "Log: $log_file"
 echo
+echo "The native capture helper will verify OpenClaw-Mic against the actual call process before answer."
+
+echo
 echo "== Preflight =="
 preflight_json="$(gateway_call facetime.preflight)"
 printf '%s\n' "$preflight_json"
@@ -170,39 +158,39 @@ echo
 echo "== Initial status =="
 status_json="$(read_status)"
 printf '%s\n' "$status_json"
-initial_status_json="$status_json"
-if status_has_call <<<"$initial_status_json"; then
+if status_has_call <<<"$status_json"; then
   echo "Initial state is not clean: facetime.status already reports an active call." >&2
   exit 1
 fi
-if ! status_audio_defaults_not_blackhole <<<"$initial_status_json"; then
-  echo "Initial state is not clean: audio defaults are already routed to BlackHole." >&2
+if ! status_bridge_is_idle <<<"$status_json"; then
+  echo "Initial state is not clean: the FaceTime bridge still owns physical-output mute." >&2
   exit 1
 fi
 
 echo
-echo "== Initial sox processes =="
-pgrep -fl sox || true
+echo "== Initial bridge processes =="
+pgrep -fl 'facetime-audio-capture|sox.*OpenClaw-Feed|caffeinate -d -i -w' || true
 
 echo
 echo "Place the whitelisted FaceTime call from the iPhone now."
-echo "This script will wait up to ${wait_seconds}s for facetime.status to report a BlackHole-routed active call."
+echo "Select OpenClaw-Mic as the FaceTime or Phone microphone if the app has not retained it."
+echo "This script will wait up to ${wait_seconds}s for a paired-device realtime session."
 deadline=$((SECONDS + wait_seconds))
 call_seen=false
 while true; do
   status_json="$(read_status)"
   if status_has_call <<<"$status_json"; then
     if [[ "$call_seen" == false ]]; then
-      echo "FaceTime call detected; waiting for BlackHole audio routing."
+      echo "FaceTime call detected; waiting for process capture and paired-device audio."
       call_seen=true
     fi
-    if status_has_routed_blackhole_call <<<"$status_json"; then
+    if status_has_ready_paired_call <<<"$status_json"; then
       break
     fi
   fi
   if (( SECONDS >= deadline )); then
     if [[ "$call_seen" == true ]]; then
-      echo "Timed out waiting for the active FaceTime call to route through BlackHole." >&2
+      echo "Timed out waiting for the active FaceTime call audio bridge." >&2
     else
       echo "Timed out waiting for an active FaceTime call." >&2
     fi
@@ -215,7 +203,7 @@ done
 echo
 echo "== Active call status =="
 printf '%s\n' "$status_json"
-echo "Audio routing check passed: active call is routed through BlackHole."
+echo "Audio routing check passed: process tap, OpenClaw-Feed, OpenClaw-Mic, and physical mute are active."
 
 echo
 echo "== Test audio =="
@@ -277,19 +265,15 @@ if status_has_call <<<"$status_json"; then
   echo "Cleanup failed: facetime.status still reports an active call." >&2
   exit 1
 fi
-if ! status_audio_defaults_not_blackhole <<<"$status_json"; then
-  echo "Cleanup failed: audio defaults were not restored away from BlackHole." >&2
-  exit 1
-fi
-if ! status_audio_defaults_match_baseline "$initial_status_json" <<<"$status_json"; then
-  echo "Cleanup failed: audio defaults do not match the pre-call baseline." >&2
+if ! status_bridge_is_idle <<<"$status_json"; then
+  echo "Cleanup failed: the FaceTime bridge still owns physical-output mute." >&2
   exit 1
 fi
 
 echo
-echo "== Final sox processes =="
-if pgrep -fl sox; then
-  echo "Cleanup failed: sox processes are still running." >&2
+echo "== Final bridge processes =="
+if pgrep -fl 'facetime-audio-capture|sox.*OpenClaw-Feed|caffeinate -d -i -w'; then
+  echo "Cleanup failed: FaceTime bridge processes are still running." >&2
   exit 1
 fi
 

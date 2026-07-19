@@ -14,13 +14,8 @@
     "skipLibCheck": true,
     "strict": true,
     "target": "es2023",
-    "typeRoots": ["./node_modules/@types", "../openclaw/node_modules/@types"],
-    "types": ["node"],
-    "paths": {
-      "openclaw/plugin-sdk": ["../openclaw/src/plugin-sdk/index.ts"],
-      "openclaw/plugin-sdk/*": ["../openclaw/src/plugin-sdk/*.ts"]
-    }
+    "types": ["node"]
   },
-  "include": ["./*.ts", "./src/**/*.ts", "../openclaw/src/types/**/*.d.ts"],
+  "include": ["./*.ts", "./src/**/*.ts"],
   "exclude": ["./tests/**", "./dist/**", "./node_modules/**"]
 }

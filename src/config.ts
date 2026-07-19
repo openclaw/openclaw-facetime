@@ -12,13 +12,6 @@ export type FaceTimeConfig = {
   helperHost: string;
   helperPort: number;
   whitelistHandles: string[];
-  audio: {
-    blackholeDeviceUid: string;
-    sampleRateHz: number;
-    saveAndRestoreDefaults: boolean;
-    outputChannels: number;
-    outputGain: number;
-  };
   realtime: {
     provider: string;
     model: string;
@@ -31,7 +24,6 @@ export type FaceTimeConfig = {
   };
 };
 
-const DEFAULT_SAMPLE_RATE_HZ = 24_000;
 const HELPER_BASE_PORT = 45670;
 
 const DEFAULT_INSTRUCTIONS = [
@@ -69,26 +61,6 @@ function resolvePort(value: unknown, fallback: number): number {
     return fallback;
   }
   return parsed;
-}
-
-function resolvePositiveInteger(value: unknown, fallback: number): number {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && value.trim()
-        ? Number(value)
-        : fallback;
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function resolvePositiveNumber(value: unknown, fallback: number): number {
-  const parsed =
-    typeof value === "number"
-      ? value
-      : typeof value === "string" && value.trim()
-        ? Number(value)
-        : fallback;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function resolveStringArray(value: unknown): string[] {
@@ -132,7 +104,6 @@ export function defaultFaceTimeHelperPort(
 
 export function resolveFaceTimeConfig(input: unknown): FaceTimeConfig {
   const raw = asRecord(input);
-  const audio = asRecord(raw.audio);
   const realtime = asRecord(raw.realtime);
   const helperPort = resolvePort(raw.helperPort, defaultFaceTimeHelperPort());
   return {
@@ -140,20 +111,10 @@ export function resolveFaceTimeConfig(input: unknown): FaceTimeConfig {
     helperHost: normalizeOptionalString(raw.helperHost) ?? "127.0.0.1",
     helperPort,
     whitelistHandles: resolveStringArray(raw.whitelistHandles),
-    audio: {
-      blackholeDeviceUid:
-        normalizeOptionalString(audio.blackholeDeviceUid) ??
-        normalizeOptionalString(audio.blackholeDeviceName) ??
-        "BlackHole 16ch",
-      sampleRateHz: resolvePositiveInteger(audio.sampleRateHz, DEFAULT_SAMPLE_RATE_HZ),
-      saveAndRestoreDefaults: resolveBoolean(audio.saveAndRestoreDefaults, true),
-      outputChannels: resolvePositiveInteger(audio.outputChannels, 16),
-      outputGain: resolvePositiveNumber(audio.outputGain, 3),
-    },
     realtime: {
       provider: normalizeOptionalString(realtime.provider) ?? "openai",
-      model: normalizeOptionalString(realtime.model) ?? "gpt-realtime-2",
-      voice: normalizeOptionalString(realtime.voice) ?? "cedar",
+      model: normalizeOptionalString(realtime.model) ?? "gpt-realtime-2.1",
+      voice: normalizeOptionalString(realtime.voice) ?? "marin",
       sessionKey: normalizeOptionalString(realtime.sessionKey) ?? "main",
       brain: "agent-consult",
       toolPolicy: resolveRealtimeVoiceAgentConsultToolPolicy(realtime.toolPolicy, "owner"),

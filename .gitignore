@@ -7,3 +7,5 @@ helper/*.xcworkspace/xcuserdata/
 helper/FaceTimeHelper.xcodeproj/xcuserdata/
 *.xcuserstate
 DerivedData/
+native/.build/
+native-driver/.build/

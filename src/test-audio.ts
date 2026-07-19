@@ -1,9 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { readFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
-import { startFaceTimeAudioPump, type FaceTimeAudioPump } from "./audio-pump.js";
+import {
+  FACETIME_AUDIO_SAMPLE_RATE_HZ,
+  OPENCLAW_FEED_DEVICE,
+  startFaceTimeAudioOutput,
+  type FaceTimeAudioOutput,
+} from "./audio-pump.js";
 import { formatErrorMessage } from "./errors.js";
 
 export type TestAudioDeps = {
@@ -11,7 +16,7 @@ export type TestAudioDeps = {
   logger?: RuntimeLogger;
   readFile?: typeof readFile;
   sleep?: (ms: number) => Promise<unknown>;
-  startPump?: typeof startFaceTimeAudioPump;
+  startOutput?: typeof startFaceTimeAudioOutput;
 };
 
 const COMMAND_TIMEOUT_MS = 15_000;
@@ -54,10 +59,6 @@ function sleep(ms: number) {
 export async function playFaceTimeTestAudio(
   deps: TestAudioDeps,
   params: {
-    deviceName: string;
-    sampleRateHz: number;
-    outputChannels?: number;
-    outputGain?: number;
     phrase?: unknown;
   },
 ) {
@@ -72,7 +73,7 @@ export async function playFaceTimeTestAudio(
       "-t",
       "raw",
       "-r",
-      String(params.sampleRateHz),
+      String(FACETIME_AUDIO_SAMPLE_RATE_HZ),
       "-c",
       "1",
       "-e",
@@ -83,35 +84,36 @@ export async function playFaceTimeTestAudio(
       rawPath,
     ]);
     const pcm = await (deps.readFile ?? readFile)(rawPath);
-    const startPump = deps.startPump ?? startFaceTimeAudioPump;
-    const pump: FaceTimeAudioPump = startPump({
-      config: {
-        deviceName: params.deviceName,
-        sampleRateHz: params.sampleRateHz,
-        outputChannels: params.outputChannels,
-        outputGain: params.outputGain,
-      },
+    const startOutput = deps.startOutput ?? startFaceTimeAudioOutput;
+    let rejectOutput: (error: Error) => void = () => {};
+    const outputFailure = new Promise<never>((_resolve, reject) => {
+      rejectOutput = reject;
+    });
+    const output: FaceTimeAudioOutput = startOutput({
       logger: deps.logger ?? console,
-      onInputAudio() {},
+      onError(error) {
+        rejectOutput(error);
+      },
     });
     try {
-      pump.writeOutputAudio(pcm);
-      const durationMs = Math.ceil((pcm.byteLength / 2 / params.sampleRateHz) * 1000);
-      await (deps.sleep ?? sleep)(Math.max(250, durationMs + 250));
+      output.writeOutputAudio(pcm);
+      const durationMs = Math.ceil((pcm.byteLength / 2 / FACETIME_AUDIO_SAMPLE_RATE_HZ) * 1000);
+      await Promise.race([(deps.sleep ?? sleep)(Math.max(250, durationMs + 250)), outputFailure]);
     } finally {
-      await pump.stop();
+      await output.stop();
     }
   } finally {
-    const cleanup = await deps.runCommandWithTimeout(["/bin/rm", "-f", audioPath, rawPath], {
-      timeoutMs: 2_000,
-    });
-    if (cleanup.code !== 0) {
-      deps.logger?.debug?.(
-        `[facetime] test audio cleanup failed: ${formatErrorMessage(
-          new Error(cleanup.stderr || cleanup.stdout || "rm failed"),
-        )}`,
-      );
-    }
+    await Promise.all(
+      [audioPath, rawPath].map((path) =>
+        unlink(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") {
+            deps.logger?.debug?.(
+              `[facetime] test audio cleanup failed: ${formatErrorMessage(error)}`,
+            );
+          }
+        }),
+      ),
+    );
   }
-  return { phrase, deviceName: params.deviceName };
+  return { phrase, deviceName: OPENCLAW_FEED_DEVICE };
 }

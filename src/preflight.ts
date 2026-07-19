@@ -1,14 +1,25 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import {
-  captureCurrentDefaults,
-  listAudioDevices,
-  type AudioDefaultsSnapshot,
-} from "./audio-routing.js";
+  FACETIME_AUDIO_SAMPLE_RATE_HZ,
+  OPENCLAW_FEED_DEVICE,
+  OPENCLAW_MIC_DEVICE,
+} from "./audio-pump.js";
 import type { FaceTimeConfig } from "./config.js";
 import { formatErrorMessage } from "./errors.js";
 
 type RunCommandWithTimeout = PluginRuntime["system"]["runCommandWithTimeout"];
+
+export type AudioDeviceDescription = {
+  isAggregate: boolean;
+  name: string;
+  uid: string;
+};
+
+export type DefaultAudioDevices = {
+  input: AudioDeviceDescription;
+  output: AudioDeviceDescription;
+};
 
 export type FaceTimePreflightCheck = {
   id: string;
@@ -21,17 +32,13 @@ export type FaceTimePreflightCheck = {
 export type FaceTimePreflightResult = {
   ok: boolean;
   helperConnected: boolean;
-  currentAudioDefaults?: AudioDefaultsSnapshot;
+  currentAudioDefaults?: DefaultAudioDevices;
   currentAudioError?: string;
   checks: FaceTimePreflightCheck[];
 };
 
-function normalizeDeviceName(value: string) {
-  return value.trim().toLowerCase();
-}
-
 function firstLine(value: unknown) {
-  return `${value ?? ""}`.trim().split(/\r?\n/)[0] || undefined;
+  return `${value ?? ""}`.trim().split(/\r?\n/u)[0] || undefined;
 }
 
 function shellSingleQuote(value: string) {
@@ -45,123 +52,127 @@ function pushCheck(
   checks.push({ required: true, ...check });
 }
 
-async function checkCommandCandidates(params: {
+export function parseCoreAudioDeviceNames(systemProfilerOutput: string): string[] {
+  const names: string[] = [];
+  for (const line of systemProfilerOutput.split(/\r?\n/u)) {
+    const match = line.match(/^\s{8}(.+):\s*$/u);
+    if (match?.[1]) {
+      names.push(match[1].trim());
+    }
+  }
+  return [...new Set(names)];
+}
+
+export function findPhysicalOutputProblem(defaults: DefaultAudioDevices): string | undefined {
+  if (defaults.output.isAggregate) {
+    return `system output is aggregate device ${defaults.output.name}`;
+  }
+  if (/BlackHole|OpenClaw-(?:Feed|Mic)/iu.test(defaults.output.name)) {
+    return `system output is virtual device ${defaults.output.name}`;
+  }
+  return undefined;
+}
+
+async function checkSox(params: {
   runCommandWithTimeout: RunCommandWithTimeout;
   checks: FaceTimePreflightCheck[];
-  id: string;
-  label: string;
-  candidates: string[];
-  args: string[];
-  required?: boolean;
 }) {
-  let lastMessage: string | undefined;
-  for (const command of params.candidates) {
-    const result = await params.runCommandWithTimeout([command, ...params.args], {
+  for (const command of ["/opt/homebrew/bin/sox", "/usr/local/bin/sox", "sox"]) {
+    const result = await params.runCommandWithTimeout([command, "--version"], {
       timeoutMs: 5_000,
     });
     if (result.code === 0) {
       pushCheck(params.checks, {
-        id: params.id,
-        label: params.label,
+        id: "sox",
+        label: "SoX command",
         ok: true,
-        required: params.required,
         message: firstLine(result.stdout) ?? command,
       });
       return;
     }
-    lastMessage = firstLine(result.stderr) ?? firstLine(result.stdout) ?? `${command} failed`;
-    if (!/ENOENT/i.test(`${result.stderr ?? ""}`)) {
-      break;
+    if (!/ENOENT/iu.test(`${result.stderr ?? ""}`)) {
+      pushCheck(params.checks, {
+        id: "sox",
+        label: "SoX command",
+        ok: false,
+        message: firstLine(result.stderr) ?? firstLine(result.stdout),
+      });
+      return;
     }
   }
   pushCheck(params.checks, {
-    id: params.id,
-    label: params.label,
+    id: "sox",
+    label: "SoX command",
     ok: false,
-    required: params.required,
-    message: lastMessage,
+    message: "SoX not found; run brew install sox",
   });
 }
 
-async function checkBlackHoleLoopback(params: {
+async function checkCallApp(params: {
   runCommandWithTimeout: RunCommandWithTimeout;
   checks: FaceTimePreflightCheck[];
-  deviceName: string;
 }) {
-  const device = shellSingleQuote(params.deviceName);
-  const script = `
-set -euo pipefail
-if [[ -x /opt/homebrew/bin/sox ]]; then sox=/opt/homebrew/bin/sox
-elif [[ -x /usr/local/bin/sox ]]; then sox=/usr/local/bin/sox
-else sox=sox
-fi
-tmp="$(mktemp -t openclaw-facetime-loopback.XXXXXX.raw)"
-cleanup() { rm -f "$tmp"; }
-trap cleanup EXIT
-if [[ -x /usr/bin/caffeinate ]]; then /usr/bin/caffeinate -u -t 8 >/dev/null 2>&1 & fi
-"$sox" -q -t coreaudio ${device} -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$tmp" trim 0 3 &
-recpid=$!
-sleep 0.3
-"$sox" -q -n -t coreaudio ${device} synth 2 sine 880 vol 0.2
-wait "$recpid" || true
-stat="$("$sox" -q -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$tmp" -n stat 2>&1)"
-rms="$(printf "%s\\n" "$stat" | awk '/RMS[[:space:]]+amplitude/ { print $3; exit }')"
-node -e 'const rms=Number(process.argv[1]); if (!Number.isFinite(rms) || rms < 0.005) process.exit(1)' "$rms"
-printf 'loopback rms=%s\\n' "$rms"
-`;
-  const result = await params.runCommandWithTimeout(["/bin/bash", "-lc", script], {
-    timeoutMs: 10_000,
-  });
+  for (const app of ["FaceTime", "Phone"]) {
+    const result = await params.runCommandWithTimeout(["/usr/bin/pgrep", "-x", app], {
+      timeoutMs: 5_000,
+    });
+    if (result.code === 0) {
+      pushCheck(params.checks, {
+        id: "call-app-running",
+        label: "FaceTime or Phone process",
+        ok: true,
+        message: app,
+      });
+      return;
+    }
+  }
   pushCheck(params.checks, {
-    id: "blackhole-loopback",
-    label: "BlackHole loopback audio",
-    ok: result.code === 0,
-    message:
-      firstLine(result.stdout) ??
-      firstLine(result.stderr) ??
-      `no loopback signal detected on ${params.deviceName}`,
+    id: "call-app-running",
+    label: "FaceTime or Phone process",
+    ok: false,
+    message: "open FaceTime for video calls or Phone for FaceTime audio calls",
   });
 }
 
-async function checkBlackHolePcmLoopback(params: {
+async function checkPairedDriverLoopback(params: {
   runCommandWithTimeout: RunCommandWithTimeout;
   checks: FaceTimePreflightCheck[];
-  deviceName: string;
 }) {
-  const device = shellSingleQuote(params.deviceName);
+  const microphone = shellSingleQuote(OPENCLAW_MIC_DEVICE);
+  const feed = shellSingleQuote(OPENCLAW_FEED_DEVICE);
   const script = `
 set -euo pipefail
 if [[ -x /opt/homebrew/bin/sox ]]; then sox=/opt/homebrew/bin/sox
 elif [[ -x /usr/local/bin/sox ]]; then sox=/usr/local/bin/sox
 else sox=sox
 fi
-capture="$(mktemp -t openclaw-facetime-pcm-loopback-capture.XXXXXX.raw)"
-source="$(mktemp -t openclaw-facetime-pcm-loopback-source.XXXXXX.raw)"
-cleanup() { rm -f "$capture" "$source"; }
+capture="$(mktemp -t openclaw-facetime-paired-capture.XXXXXX.raw)"
+source="$(mktemp -t openclaw-facetime-paired-source.XXXXXX.raw)"
+cleanup() {
+  /bin/unlink "$capture" >/dev/null 2>&1 || true
+  /bin/unlink "$source" >/dev/null 2>&1 || true
+}
 trap cleanup EXIT
-if [[ -x /usr/bin/caffeinate ]]; then /usr/bin/caffeinate -u -t 8 >/dev/null 2>&1 & fi
-"$sox" -q -n -t raw -r 24000 -c 1 -e signed-integer -b 16 -L "$source" synth 2 sine 880 vol 0.2
-"$sox" -q -t coreaudio ${device} -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" trim 0 3 &
+"$sox" -q -n -t raw -r ${FACETIME_AUDIO_SAMPLE_RATE_HZ} -c 1 -e signed-integer -b 16 -L "$source" synth 2 sine 880 vol 0.2
+"$sox" -q -t coreaudio ${microphone} -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" trim 0 3 &
 recpid=$!
 sleep 0.3
-"$sox" -q --buffer 4096 -t raw -r 24000 -c 1 -e signed-integer -b 16 -L "$source" -c 16 -t coreaudio ${device} gain 1
+"$sox" -q --buffer 480 -t raw -r ${FACETIME_AUDIO_SAMPLE_RATE_HZ} -c 1 -e signed-integer -b 16 -L "$source" -t coreaudio ${feed}
 wait "$recpid" || true
 stat="$("$sox" -q -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" -n stat 2>&1)"
 rms="$(printf "%s\\n" "$stat" | awk '/RMS[[:space:]]+amplitude/ { print $3; exit }')"
 node -e 'const rms=Number(process.argv[1]); if (!Number.isFinite(rms) || rms < 0.005) process.exit(1)' "$rms"
-printf 'pcm loopback rms=%s\\n' "$rms"
+printf 'paired-driver rms=%s\\n' "$rms"
 `;
   const result = await params.runCommandWithTimeout(["/bin/bash", "-lc", script], {
     timeoutMs: 10_000,
   });
   pushCheck(params.checks, {
-    id: "blackhole-pcm-loopback",
-    label: "BlackHole PCM loopback audio",
+    id: "paired-driver-loopback",
+    label: "OpenClaw-Feed to OpenClaw-Mic loopback",
     ok: result.code === 0,
     message:
-      firstLine(result.stdout) ??
-      firstLine(result.stderr) ??
-      `no PCM loopback signal detected on ${params.deviceName}`,
+      firstLine(result.stdout) ?? firstLine(result.stderr) ?? "no paired-driver signal detected",
   });
 }
 
@@ -173,6 +184,10 @@ function hasProviderCredential(params: {
   if (providerConfig && "apiKey" in providerConfig) {
     return true;
   }
+  const modelProvider = params.fullConfig.models?.providers?.[params.config.realtime.provider];
+  if (modelProvider?.apiKey) {
+    return true;
+  }
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
@@ -182,7 +197,9 @@ export async function runFaceTimePreflight(params: {
   runtime: PluginRuntime;
   logger?: RuntimeLogger;
   helperConnected: boolean;
+  captureBinary: string;
 }): Promise<FaceTimePreflightResult> {
+  const runCommandWithTimeout = params.runtime.system.runCommandWithTimeout;
   const checks: FaceTimePreflightCheck[] = [];
   pushCheck(checks, {
     id: "helper-connected",
@@ -193,85 +210,96 @@ export async function runFaceTimePreflight(params: {
       : `no helper connected on ${params.config.helperHost}:${params.config.helperPort}`,
   });
 
-  let currentAudioDefaults: AudioDefaultsSnapshot | undefined;
-  let currentAudioError: string | undefined;
-  try {
-    currentAudioDefaults = await captureCurrentDefaults({
-      runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
-      logger: params.logger,
-    });
+  await checkSox({ runCommandWithTimeout, checks });
+
+  const executable = await runCommandWithTimeout(["/usr/bin/test", "-x", params.captureBinary], {
+    timeoutMs: 5_000,
+  });
+  pushCheck(checks, {
+    id: "capture-binary",
+    label: "FaceTime process-tap capture helper",
+    ok: executable.code === 0,
+    message: executable.code === 0 ? params.captureBinary : "run pnpm build:capture",
+  });
+
+  await checkCallApp({ runCommandWithTimeout, checks });
+
+  const profiler = await runCommandWithTimeout(["/usr/sbin/system_profiler", "SPAudioDataType"], {
+    timeoutMs: 10_000,
+  });
+  const deviceNames = profiler.code === 0 ? parseCoreAudioDeviceNames(profiler.stdout ?? "") : [];
+  for (const [id, label, deviceName] of [
+    ["paired-driver-mic", "OpenClaw microphone device", OPENCLAW_MIC_DEVICE],
+    ["paired-driver-feed", "OpenClaw feed device", OPENCLAW_FEED_DEVICE],
+  ] as const) {
+    const found = deviceNames.includes(deviceName);
     pushCheck(checks, {
-      id: "current-audio-defaults",
-      label: "Current audio defaults",
-      ok: true,
-      message: `input=${currentAudioDefaults.inputDeviceUid ?? "unknown"}, output=${
-        currentAudioDefaults.outputDeviceUid ?? "unknown"
-      }`,
-    });
-  } catch (error) {
-    currentAudioError = formatErrorMessage(error);
-    pushCheck(checks, {
-      id: "current-audio-defaults",
-      label: "Current audio defaults",
-      ok: false,
-      message: currentAudioError,
+      id,
+      label,
+      ok: found,
+      message: found ? deviceName : `missing ${deviceName}; run pnpm install:driver`,
     });
   }
 
-  for (const type of ["input", "output"] as const) {
-    try {
-      const devices = await listAudioDevices(
-        { runCommandWithTimeout: params.runtime.system.runCommandWithTimeout },
-        type,
-      );
-      const target = normalizeDeviceName(params.config.audio.blackholeDeviceUid);
-      const found = devices.some((device) => normalizeDeviceName(device) === target);
+  let currentAudioDefaults: DefaultAudioDevices | undefined;
+  let currentAudioError: string | undefined;
+  if (executable.code === 0) {
+    const defaults = await runCommandWithTimeout([params.captureBinary, "--default-devices"], {
+      timeoutMs: 5_000,
+    });
+    if (defaults.code === 0) {
+      try {
+        currentAudioDefaults = JSON.parse(defaults.stdout ?? "") as DefaultAudioDevices;
+        const problem = findPhysicalOutputProblem(currentAudioDefaults);
+        pushCheck(checks, {
+          id: "physical-output",
+          label: "Physical call output",
+          ok: !problem,
+          message: problem ?? currentAudioDefaults.output.name,
+        });
+      } catch (error) {
+        currentAudioError = `invalid audio-device JSON: ${formatErrorMessage(error)}`;
+      }
+    } else {
+      currentAudioError = firstLine(defaults.stderr) ?? firstLine(defaults.stdout);
+    }
+    if (currentAudioError) {
       pushCheck(checks, {
-        id: `blackhole-${type}`,
-        label: `BlackHole ${type} device`,
-        ok: found,
-        message: found
-          ? params.config.audio.blackholeDeviceUid
-          : `missing ${params.config.audio.blackholeDeviceUid}; found: ${devices.join(", ")}`,
-      });
-    } catch (error) {
-      pushCheck(checks, {
-        id: `blackhole-${type}`,
-        label: `BlackHole ${type} device`,
+        id: "physical-output",
+        label: "Physical call output",
         ok: false,
-        message: formatErrorMessage(error),
+        message: currentAudioError,
       });
     }
+
+    const capture = await runCommandWithTimeout([params.captureBinary, "--check"], {
+      timeoutMs: 8_000,
+    });
+    pushCheck(checks, {
+      id: "process-tap",
+      label: "FaceTime app-audio process tap",
+      ok: capture.code === 0,
+      message:
+        firstLine(capture.stderr) ??
+        firstLine(capture.stdout) ??
+        "grant Screen & System Audio Recording permission",
+    });
+  } else {
+    pushCheck(checks, {
+      id: "physical-output",
+      label: "Physical call output",
+      ok: false,
+      message: "capture helper unavailable",
+    });
+    pushCheck(checks, {
+      id: "process-tap",
+      label: "FaceTime app-audio process tap",
+      ok: false,
+      message: "capture helper unavailable",
+    });
   }
 
-  await checkCommandCandidates({
-    runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
-    checks,
-    id: "sox",
-    label: "SoX command",
-    candidates: ["/opt/homebrew/bin/sox", "/usr/local/bin/sox", "sox"],
-    args: ["--version"],
-  });
-
-  await checkBlackHoleLoopback({
-    runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
-    checks,
-    deviceName: params.config.audio.blackholeDeviceUid,
-  });
-  await checkBlackHolePcmLoopback({
-    runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
-    checks,
-    deviceName: params.config.audio.blackholeDeviceUid,
-  });
-
-  await checkCommandCandidates({
-    runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
-    checks,
-    id: "facetime-running",
-    label: "FaceTime.app process",
-    candidates: ["/usr/bin/pgrep"],
-    args: ["-x", "FaceTime"],
-  });
+  await checkPairedDriverLoopback({ runCommandWithTimeout, checks });
 
   pushCheck(checks, {
     id: "realtime-provider",

@@ -78,6 +78,10 @@ export class FaceTimeHelperSocketServer {
     return await this.#sendAction("leave-call", { callUUID });
   }
 
+  async safetyMute(callUUID: string): Promise<HelperActionResult> {
+    return await this.#sendActionToAll("safety-mute", { callUUID });
+  }
+
   async setMuted(callUUID: string, muted: boolean): Promise<HelperActionResult> {
     return await this.#sendActionToAll("set-muted", { callUUID, muted });
   }

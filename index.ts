@@ -3,7 +3,11 @@ import {
   errorShape,
   type GatewayRequestHandlerOptions,
 } from "openclaw/plugin-sdk/gateway-runtime";
-import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import {
+  definePluginEntry,
+  type OpenClawPluginApi,
+  type OpenClawPluginDefinition,
+} from "openclaw/plugin-sdk/plugin-entry";
 import { createFaceTimeRuntime, type FaceTimeRuntime } from "./runtime-entry.js";
 import { formatErrorMessage } from "./src/errors.js";
 import {
@@ -11,6 +15,7 @@ import {
   validateFaceTimeConfig,
   type FaceTimeConfig,
 } from "./src/config.js";
+import { resolvePluginRoot } from "./src/plugin-paths.js";
 
 const faceTimeConfigSchema = {
   parse(value: unknown): FaceTimeConfig {
@@ -21,9 +26,6 @@ const faceTimeConfigSchema = {
     helperHost: { label: "Helper Host", advanced: true },
     helperPort: { label: "Helper Port", advanced: true },
     whitelistHandles: { label: "Allowed FaceTime Handles" },
-    "audio.blackholeDeviceUid": { label: "BlackHole Device", advanced: true },
-    "audio.sampleRateHz": { label: "Audio Sample Rate", advanced: true },
-    "audio.saveAndRestoreDefaults": { label: "Restore Audio Defaults", advanced: true },
     "realtime.provider": { label: "Realtime Provider", advanced: true },
     "realtime.model": { label: "Realtime Model", advanced: true },
     "realtime.voice": { label: "Realtime Voice", advanced: true },
@@ -36,7 +38,7 @@ const faceTimeConfigSchema = {
 let runtimePromise: Promise<FaceTimeRuntime> | undefined;
 let runtime: FaceTimeRuntime | undefined;
 
-export default definePluginEntry({
+const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
   id: "facetime",
   name: "FaceTime",
   description: "Private FaceTime realtime voice carrier for Lobster",
@@ -60,6 +62,7 @@ export default definePluginEntry({
         fullConfig: api.config,
         runtime: api.runtime,
         logger: api.logger,
+        pluginRoot: resolvePluginRoot(import.meta.url),
       });
       runtime = await runtimePromise;
       return runtime;
@@ -132,3 +135,5 @@ export default definePluginEntry({
     });
   },
 });
+
+export default faceTimePlugin;

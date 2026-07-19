@@ -2,6 +2,7 @@
   "id": "facetime",
   "name": "FaceTime",
   "description": "Private FaceTime realtime voice carrier for Lobster",
+  "version": "2026.5.10-beta.1",
   "activation": {
     "onStartup": true
   },
@@ -12,33 +13,24 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "enabled": { "type": "boolean" },
-      "helperHost": { "type": "string" },
+      "enabled": { "type": "boolean", "default": true },
+      "helperHost": { "type": "string", "default": "127.0.0.1" },
       "helperPort": { "type": "number" },
       "whitelistHandles": {
         "type": "array",
-        "items": { "type": "string" }
-      },
-      "audio": {
-        "type": "object",
-        "additionalProperties": false,
-        "properties": {
-          "blackholeDeviceUid": { "type": "string" },
-          "blackholeDeviceName": { "type": "string" },
-          "sampleRateHz": { "type": "number" },
-          "saveAndRestoreDefaults": { "type": "boolean" }
-        }
+        "items": { "type": "string" },
+        "default": []
       },
       "realtime": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
-          "provider": { "type": "string" },
-          "model": { "type": "string" },
-          "voice": { "type": "string" },
-          "sessionKey": { "type": "string" },
-          "brain": { "type": "string", "enum": ["agent-consult"] },
-          "toolPolicy": { "type": "string" },
+          "provider": { "type": "string", "default": "openai" },
+          "model": { "type": "string", "default": "gpt-realtime-2.1" },
+          "voice": { "type": "string", "default": "marin" },
+          "sessionKey": { "type": "string", "default": "main" },
+          "brain": { "type": "string", "enum": ["agent-consult"], "default": "agent-consult" },
+          "toolPolicy": { "type": "string", "default": "owner" },
           "instructions": { "type": "string" },
           "providers": {
             "type": "object",
@@ -52,9 +44,7 @@
     }
   },
   "channelEnvVars": {
-    "facetime": [
-      "OPENAI_API_KEY"
-    ]
+    "facetime": ["OPENAI_API_KEY"]
   },
   "uiHints": {
     "enabled": { "label": "Enable FaceTime Voice" },
@@ -64,9 +54,6 @@
       "label": "Allowed FaceTime Handles",
       "help": "Only incoming calls from these handle values are auto-answered."
     },
-    "audio.blackholeDeviceUid": { "label": "BlackHole Device", "advanced": true },
-    "audio.sampleRateHz": { "label": "Audio Sample Rate", "advanced": true },
-    "audio.saveAndRestoreDefaults": { "label": "Restore Audio Defaults", "advanced": true },
     "realtime.provider": { "label": "Realtime Provider", "advanced": true },
     "realtime.model": { "label": "Realtime Model", "advanced": true },
     "realtime.voice": { "label": "Realtime Voice", "advanced": true },

@@ -5,8 +5,7 @@
     "declaration": true,
     "declarationMap": false,
     "noEmit": false,
-    "outDir": "./dist",
-    "paths": {}
+    "outDir": "./dist"
   },
   "include": ["./*.ts", "./src/**/*.ts"],
   "exclude": ["./tests/**", "./dist/**", "./node_modules/**", "./vitest.config.ts"]

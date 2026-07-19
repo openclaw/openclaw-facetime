@@ -1,120 +1,53 @@
-# Phase 1 Verification
+# FaceTime paired-audio verification
 
-Implementation and non-call readiness are complete; live call acceptance is still unverified.
+## Proof contract
 
-## Current Evidence Commands
+- Failure: caller audio reached the model through the old BlackHole path, but model speech did not reliably reach the remote caller.
+- Changed path: the plugin captures FaceTime and Phone audio through a Core Audio process tap and sends model PCM to `OpenClaw-Feed`, which mirrors into `OpenClaw-Mic`.
+- Pass condition: the caller and Lobster hear each other, the remote caller hears the deterministic test phrase, barge-in clears queued speech, the physical Mac speaker stays silent, and all child processes stop after hangup.
+- Evidence: focused automated tests, signed Swift helper build, paired-driver loopback preflight, then a user-confirmed iPhone round trip through the plugin.
 
-Run these from `/Users/lobster/GitHub/openclaw-facetime` before attempting a live call:
+## Automated proof
 
-```bash
-git status --short
-git rev-parse --short HEAD
-gh run list --repo openclaw/openclaw-facetime --branch main --limit 3 \
-  --json databaseId,headSha,status,conclusion,workflowName,createdAt,url
-scripts/live-smoke.sh
-openclaw tasks list --status running
+```sh
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm build:capture
+bash -n scripts/*.sh
+npm pack --dry-run
 ```
 
-Required idle evidence:
+Verify that the package contains no generated `.driver` or native `.build` output.
 
-- Working tree is clean.
-- Branch-tip CI is successful.
-- `facetime.preflight` returns `ok: true`.
-- Helper is connected.
-- FaceTime.app is running.
-- Current audio defaults are the real MacBook mic/speakers.
-- BlackHole is visible as both input and output.
-- BlackHole synth loopback and PCM pump-style loopback both pass with a nonzero RMS.
-- Realtime provider credentials resolve to `openai:gpt-realtime-2`.
-- `facetime.status` has `calls: []`.
-- No leftover `sox` processes.
-- OpenClaw background tasks show `0 queued`, `0 running`, `0 issues`.
+## Preflight
 
-## Prompt-To-Artifact Checklist
-
-| Requirement | Evidence | Status |
-| --- | --- | --- |
-| Standalone repo named `openclaw-facetime` | Git repo at `/Users/lobster/GitHub/openclaw-facetime`, remote `openclaw/openclaw-facetime` | Done |
-| No BlueBubbles dependency | Helper and plugin live in this repo; README says no external server/app is required | Done |
-| Extension id/name `facetime` / `FaceTime` | `openclaw.plugin.json`, `index.ts` | Done |
-| OpenAI key via SecretRef | Live preflight reports realtime provider credentials configured | Done |
-| Whitelist includes Omar | Live config has `mailto:omar@shahine.com`, `omar@shahine.com`, `+12069106512` | Done |
-| Helper socket ingestion | `helperConnected: true` from `facetime.preflight` | Done |
-| Auto-answer wiring | `FaceTimeHelperSocketServer.answerCall`, incoming call handler in `src/runtime.ts` | Implemented, live verification pending |
-| Audio routing through BlackHole | `src/audio-routing.ts`, preflight checks BlackHole input/output and loopback audio | Implemented, live verification pending |
-| PCM pump | `src/audio-pump.ts`, PCM preflight loopback, tests cover wake guard/spawn/write/clear/stop cleanup | Implemented, live verification pending |
-| Realtime talk driver | `src/talk-driver.ts` uses OpenClaw realtime voice bridge with agent-consult | Implemented, live verification pending |
-| Barge-in handling | `src/talk-driver.ts` clears output on `input_audio_buffer.speech_started` | Implemented, live verification pending |
-| Operator hangup | `facetime.hangup`, helper `leave-call`, tests in `tests/helper-rpc.test.ts` | Done |
-| Preflight before live test | `facetime.preflight`, `scripts/live-smoke.sh` fail fast unless `ok: true` | Done |
-| Full live acceptance runner | `scripts/live-acceptance.sh` waits for a user-placed call, requires preflight success, and records the Phase 1 gates | Ready, live verification pending |
-| CI | `.github/workflows/ci.yml` runs `pnpm typecheck`, `pnpm test`, `bash -n scripts/*.sh`, and `pnpm build`; verify branch-tip success with `gh run list` | Done |
-| Idle task cleanup | `openclaw tasks list --status running` reports `0 queued`, `0 running`, `0 issues` | Done |
-
-## Live Acceptance Gates
-
-Run these only with the user present.
-
-1. Preflight:
-
-   ```bash
-   scripts/live-smoke.sh
-   ```
-
-   Expected: `ok: true`, `calls: []`, no `sox` processes.
-
-2. Auto-answer:
-
-   From iPhone, FaceTime the whitelisted Apple ID.
-
-   Expected: Mac answers within 2 rings. `facetime.status` shows one call.
-
-3. Audio routing:
-
-   ```bash
-   openclaw gateway call facetime.status --json --timeout 10000
-   ```
-
-   Expected: active call has `audioRouted: true`, input/output devices are `BlackHole 16ch`.
-
-4. Test audio:
-
-   ```bash
-   scripts/live-smoke.sh --test-audio
-   ```
-
-   Expected: iPhone hears "This is OpenClaw speaking through FaceTime."
-
-5. Realtime speech:
-
-   Speak into the iPhone.
-
-   Expected: `facetime.status` active call includes recent talk events with `transcript.*` and `output.audio.delta`.
-
-6. Tool use:
-
-   Ask for a tool-backed answer, such as a calendar/status question.
-
-   Expected: `recentTalkEvents` includes `tool.call` and `tool.result`.
-
-7. Barge-in:
-
-   Talk over Lobster mid-sentence.
-
-   Expected: output cuts off quickly and status events continue.
-
-8. Cleanup:
-
-   ```bash
-   scripts/live-smoke.sh --hangup
-   pgrep -fl sox || true
-   openclaw gateway call facetime.status --json --timeout 10000
-   ```
-
-   Expected: no calls, no `sox` processes, audio defaults restored to MacBook mic/speakers.
-
-The same gates can be run as one guided pass with:
-
-```bash
-scripts/live-acceptance.sh
+```sh
+openclaw gateway call facetime.preflight --json
 ```
+
+All required checks must pass. At call time, the helper answers with uplink muted, verifies that `OpenClaw-Mic` is the actual active FaceTime or Phone process's only input and that every output is physical, then enables transmission. It continues monitoring the audio owner and both routes, then safety-mutes and retries hangup on drift or failure.
+
+## FaceTime video acceptance
+
+1. Open FaceTime and inject the helper.
+2. Select `OpenClaw-Mic` as FaceTime's microphone and physical speakers or headphones as output.
+3. Run preflight.
+4. Place the whitelisted iPhone call.
+5. Confirm `audioReady`, `realtimeActive`, and `processOutputSuppressed` are true.
+6. Run `facetime.testAudio` and confirm the iPhone hears the phrase.
+7. Speak from the iPhone and confirm a contextual response.
+8. Ask a tool-backed question and confirm agent consultation.
+9. Interrupt Lobster and confirm queued speech stops promptly.
+10. Hang up and verify there is no active call and no capture, SoX, or caffeinate child remains.
+
+## FaceTime audio acceptance
+
+Repeat the same sequence with a Phone-owned FaceTime audio call. Select `OpenClaw-Mic` in Phone, not FaceTime. This is a separate proof because current macOS assigns audio-only calls to Phone.
+
+## Evidence classes
+
+- The automated suite and driver loopback are deterministic integration proof.
+- A successful process-tap `--check` proves helper execution and TCC permission, but not remote delivery.
+- User confirmation from the iPhone is exact-path runtime proof for delivery.
+- The earlier successful OpenClaw example call is root-cause and design evidence. The plugin still needs its own final exact-path pass after consolidation.
