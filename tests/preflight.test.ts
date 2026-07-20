@@ -21,7 +21,7 @@ describe("FaceTime preflight", () => {
       if (argv.at(-1) === "--version") {
         return { code: 0, stdout: "sox: SoX v14.4.2\n", stderr: "" };
       }
-      if (argv[0] === "/usr/bin/test") {
+      if (argv[0] === "/bin/test") {
         return { code: 0, stdout: "", stderr: "" };
       }
       if (argv[0] === "/usr/bin/pgrep") {

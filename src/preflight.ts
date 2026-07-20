@@ -212,7 +212,7 @@ export async function runFaceTimePreflight(params: {
 
   await checkSox({ runCommandWithTimeout, checks });
 
-  const executable = await runCommandWithTimeout(["/usr/bin/test", "-x", params.captureBinary], {
+  const executable = await runCommandWithTimeout(["/bin/test", "-x", params.captureBinary], {
     timeoutMs: 5_000,
   });
   pushCheck(checks, {

@@ -283,8 +283,17 @@ private func inputDeviceNames(_ process: AudioProcess) throws -> [String] {
   let inputDevices = try process.objectID.readObjectIDs(
     kAudioProcessPropertyDevices,
     scope: kAudioObjectPropertyScopeInput)
-  return try inputDevices.map {
-    try $0.readString(kAudioObjectPropertyName)
+  return try inputDevices.compactMap { device in
+    // The process device list can include its output-only speaker even under
+    // input scope during a FaceTime handoff. Only a device with input streams
+    // can source microphone audio, so output-only devices are safe to ignore.
+    let inputStreams = try device.readObjectIDs(
+      kAudioDevicePropertyStreams,
+      scope: kAudioDevicePropertyScopeInput)
+    guard !inputStreams.isEmpty else {
+      return nil
+    }
+    return try device.readString(kAudioObjectPropertyName)
   }
 }
 
@@ -333,18 +342,60 @@ private func requireExpectedActiveOwner(
   }
 }
 
+private func selectActiveOwner(_ active: [AudioProcess]) -> AudioProcess? {
+  if active.count == 1 {
+    return active[0]
+  }
+  let mediaOwners = active.filter { $0.trustedIdentity == "com.apple.avconferenced" }
+  if mediaOwners.count == 1 {
+    // FaceTime and Phone are UI companions for the same call while
+    // avconferenced owns its media. Prefer the media process instead of
+    // treating the normal companion pair as two unrelated calls.
+    return mediaOwners[0]
+  }
+  return nil
+}
+
 private func resolveActiveOwner(requestedNames: Set<String>) throws -> AudioProcess {
   let active = try readAudioProcesses().filter {
     $0.runningOutput
       && requestedNames.contains($0.name.lowercased())
       && allowedSigningIdentifiers.contains($0.trustedIdentity)
   }
-  guard active.count == 1 else {
+  guard let selected = selectActiveOwner(active) else {
     let description = active.isEmpty
       ? "none" : active.map { "\($0.name) pid=\($0.pid)" }.joined(separator: ", ")
     throw CaptureError.audioOwnerChanged(description)
   }
-  return active[0]
+  return selected
+}
+
+private func waitForActiveOwner(
+  requestedNames: Set<String>,
+  processNames: [String],
+  timeout: Duration
+) async throws -> AudioProcess {
+  let deadline = ContinuousClock.now + timeout
+  var active: [AudioProcess] = []
+  while ContinuousClock.now < deadline {
+    active = try readAudioProcesses().filter {
+      $0.runningOutput
+        && requestedNames.contains($0.name.lowercased())
+        && allowedSigningIdentifiers.contains($0.trustedIdentity)
+    }
+    if let selected = selectActiveOwner(active) {
+      return selected
+    }
+    // FaceTime and avconferenced briefly overlap while an answered call moves
+    // to its steady audio owner. Wait through that handoff, but retain the
+    // fail-closed ambiguity check if more than one owner remains active.
+    try await Task.sleep(for: .milliseconds(100))
+  }
+  if active.count > 1 {
+    throw CaptureError.ambiguousAudioOwners(
+      active.map { "\($0.name) pid=\($0.pid)" })
+  }
+  throw CaptureError.audioProcessNotFound(processNames)
 }
 
 private func waitForOpenClawMicrophoneRoute(
@@ -598,7 +649,18 @@ private func waitForTerminationSignal(
     }
     if state.failure == nil && ContinuousClock.now >= nextRouteCheck {
       do {
-        let activeProcess = try resolveActiveOwner(requestedNames: requestedNames)
+        let activeProcess: AudioProcess
+        do {
+          activeProcess = try resolveActiveOwner(requestedNames: requestedNames)
+        } catch CaptureError.audioOwnerChanged {
+          // FaceTime can briefly stop both candidate processes while moving
+          // the live call between FaceTime and avconferenced. Retain the
+          // existing muted tap while the legitimate owner settles.
+          activeProcess = try await waitForActiveOwner(
+            requestedNames: requestedNames,
+            processNames: requestedNames.sorted(),
+            timeout: .seconds(3))
+        }
         if activeProcess.pid != currentProcess.pid
           || activeProcess.objectID != currentProcess.objectID
         {
@@ -621,9 +683,12 @@ private func waitForTerminationSignal(
             "facetime-audio-capture: rebound process tap to \(activeProcess.name) pid=\(activeProcess.pid)\n",
             stderr)
         }
-        guard try validateExclusiveOpenClawInput(currentProcess) else {
-          throw CaptureError.inputRouteMismatch(
-            "\(currentProcess.name) pid=\(currentProcess.pid)", [])
+        if try !validateExclusiveOpenClawInput(currentProcess) {
+          // Applying FaceTime transmission state can briefly clear the
+          // process device list. Keep the muted tap active while the expected
+          // OpenClaw-Mic route returns; a real wrong route still fails at once.
+          try await waitForOpenClawMicrophoneRoute(
+            currentProcess, requestedNames: requestedNames)
         }
         try validatePhysicalOutputRoute(currentProcess)
       } catch {
@@ -670,17 +735,28 @@ private struct FaceTimeAudioCapture {
         requestedNames.contains($0.name.lowercased())
           && allowedSigningIdentifiers.contains($0.trustedIdentity)
       }
-      let active = authorized.filter(\.runningOutput)
       let selected: [AudioProcess]
-      if active.count == 1 {
-        selected = active
-      } else if active.count > 1 {
-        throw CaptureError.ambiguousAudioOwners(
-          active.map { "\($0.name) pid=\($0.pid)" })
-      } else if arguments.checkOnly, let idle = authorized.first {
-        selected = [idle]
+      if arguments.checkOnly {
+        let active = authorized.filter(\.runningOutput)
+        if let activeOwner = selectActiveOwner(active) {
+          selected = [activeOwner]
+        } else if active.count > 1 {
+          throw CaptureError.ambiguousAudioOwners(
+            active.map { "\($0.name) pid=\($0.pid)" })
+        } else if let idle = authorized.first {
+          selected = [idle]
+        } else {
+          throw CaptureError.audioProcessNotFound(arguments.processNames)
+        }
       } else {
-        throw CaptureError.audioProcessNotFound(arguments.processNames)
+        selected = [
+          try await waitForActiveOwner(
+            requestedNames: requestedNames,
+            processNames: arguments.processNames,
+            // The parent gives capture startup 10 seconds; leave room to
+            // construct and start the process tap after the owner settles.
+            timeout: .seconds(8))
+        ]
       }
       let selectedDescription = selected.map { "\($0.name) (pid \($0.pid))" }.joined(
         separator: ", ")
@@ -714,7 +790,10 @@ private struct FaceTimeAudioCapture {
           }
           break
         } catch CaptureError.audioOwnerChanged {
-          currentProcess = try resolveActiveOwner(requestedNames: requestedNames)
+          currentProcess = try await waitForActiveOwner(
+            requestedNames: requestedNames,
+            processNames: arguments.processNames,
+            timeout: .seconds(3))
           let replacement = try ProcessTap(
             processObjectIDs: [currentProcess.objectID], lifecycle: lifecycle)
           try replacement.start()
