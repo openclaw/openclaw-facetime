@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  abortAgentRun: vi.fn(() => true),
+  buildCancelResult: vi.fn((message: string) => ({ status: "cancelled", message })),
   bridge: {
     bridge: { supportsToolResultContinuation: false },
     acknowledgeMark: vi.fn(),
@@ -14,6 +16,7 @@ const mocks = vi.hoisted(() => ({
     triggerGreeting: vi.fn(),
   },
   createSession: vi.fn(),
+  consult: vi.fn(),
   pump: {
     suppressionReady: vi.fn(async () => {}),
     routeReady: vi.fn(async () => {}),
@@ -26,11 +29,19 @@ const mocks = vi.hoisted(() => ({
     stop: vi.fn(async () => {}),
   },
   pumpParams: undefined as undefined | { onError(error: Error): void },
+  sessionParams: undefined as
+    | undefined
+    | {
+        instructions?: string;
+        onEvent(event: { direction: "client" | "server"; type: string; detail?: string }): void;
+        onToolCall(event: { itemId: string; callId: string; name: string; args: unknown }): void;
+      },
 }));
 
 vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
+  buildRealtimeVoiceAgentCancelProviderResult: mocks.buildCancelResult,
   buildRealtimeVoiceAgentConsultWorkingResponse: vi.fn(),
-  consultRealtimeVoiceAgent: vi.fn(),
+  consultRealtimeVoiceAgent: mocks.consult,
   createRealtimeVoiceBridgeSession: mocks.createSession,
   createTalkSessionController: vi.fn(() => ({
     outputAudioActive: false,
@@ -51,6 +62,19 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
   resolveRealtimeVoiceAgentConsultToolsAllow: vi.fn(() => []),
 }));
 
+vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
+  resolveDefaultAgentId: vi.fn(
+    (config: { agents?: { list?: Array<{ id: string; default?: boolean }> } }) => {
+      const agents = config.agents?.list ?? [];
+      return agents.find((agent) => agent.default)?.id ?? agents[0]?.id ?? "main";
+    },
+  ),
+}));
+
+vi.mock("openclaw/plugin-sdk/agent-harness", () => ({
+  abortAgentHarnessRun: mocks.abortAgentRun,
+}));
+
 vi.mock("openclaw/plugin-sdk/secret-input-runtime", () => ({
   resolveConfiguredSecretInputString: vi.fn(async () => ({ value: undefined })),
 }));
@@ -69,7 +93,14 @@ function startParams(overrides: Record<string, unknown> = {}) {
   return {
     config: resolveFaceTimeConfig({ whitelistHandles: ["caller@example.com"] }),
     fullConfig: {} as any,
-    runtime: { agent: {} } as any,
+    runtime: {
+      agent: {
+        session: {
+          resolveStorePath: vi.fn(() => "/store"),
+          getSessionEntry: vi.fn(() => ({ sessionId: "facetime-consult-session" })),
+        },
+      },
+    } as any,
     logger: console,
     callUUID: "call-1",
     captureBinary: "/capture",
@@ -81,7 +112,15 @@ describe("FaceTime talk driver lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.pumpParams = undefined;
-    mocks.createSession.mockReturnValue(mocks.bridge);
+    mocks.sessionParams = undefined;
+    mocks.bridge.bridge.supportsToolResultContinuation = false;
+    (
+      mocks.bridge.bridge as { supportsToolResultSuppression?: boolean }
+    ).supportsToolResultSuppression = true;
+    mocks.createSession.mockImplementation((params) => {
+      mocks.sessionParams = params;
+      return mocks.bridge;
+    });
   });
 
   it("closes native audio when startup is aborted during provider connect", async () => {
@@ -195,5 +234,180 @@ describe("FaceTime talk driver lifecycle", () => {
     await Promise.all([first, second]);
 
     expect(mocks.bridge.close).toHaveBeenCalledOnce();
+  });
+
+  it("silently closes a consult superseded by new caller speech", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    let finishConsult = (_result: { text: string }) => {};
+    mocks.consult.mockImplementationOnce(
+      () =>
+        new Promise<{ text: string }>((resolve) => {
+          finishConsult = resolve;
+        }),
+    );
+    await startFaceTimeTalkDriver(startParams());
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Who am I?" },
+    });
+    mocks.sessionParams?.onEvent({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+    });
+
+    await vi.waitFor(() =>
+      expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
+        "call-1",
+        {
+          status: "cancelled",
+          message: "The caller continued speaking before this consult completed.",
+        },
+        { suppressResponse: true },
+      ),
+    );
+    expect(mocks.abortAgentRun).toHaveBeenCalledWith("facetime-consult-session");
+    finishConsult({ text: "You are Omar." });
+    await Promise.resolve();
+    expect(mocks.bridge.submitToolResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("silently closes a failed consult superseded by new caller speech", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    let failConsult = (_error: Error) => {};
+    mocks.consult.mockImplementationOnce(
+      () =>
+        new Promise<{ text: string }>((_resolve, reject) => {
+          failConsult = reject;
+        }),
+    );
+    await startFaceTimeTalkDriver(startParams());
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Who am I?" },
+    });
+    mocks.sessionParams?.onEvent({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+    });
+
+    await vi.waitFor(() =>
+      expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
+        "call-1",
+        {
+          status: "cancelled",
+          message: "The caller continued speaking before this consult completed.",
+        },
+        { suppressResponse: true },
+      ),
+    );
+    failConsult(new Error("agent unavailable"));
+    await Promise.resolve();
+    expect(mocks.bridge.submitToolResult).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses an unsuppressed terminal cancellation when the provider requires it", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    (
+      mocks.bridge.bridge as { supportsToolResultSuppression?: boolean }
+    ).supportsToolResultSuppression = false;
+    mocks.consult.mockImplementationOnce(() => new Promise<{ text: string }>(() => {}));
+    await startFaceTimeTalkDriver(startParams());
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Who am I?" },
+    });
+    mocks.sessionParams?.onEvent({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+    });
+
+    await vi.waitFor(() =>
+      expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
+        "call-1",
+        {
+          status: "cancelled",
+          message: "The caller continued speaking before this consult completed.",
+        },
+        undefined,
+      ),
+    );
+  });
+
+  it("closes safely when a terminal consult cancellation cannot be submitted", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    mocks.bridge.submitToolResult.mockRejectedValueOnce(new Error("submission failed"));
+    mocks.consult.mockImplementationOnce(() => new Promise<{ text: string }>(() => {}));
+    const onFailure = vi.fn(async () => true);
+    await startFaceTimeTalkDriver(startParams({ onFailure }));
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Who am I?" },
+    });
+    mocks.sessionParams?.onEvent({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+    });
+
+    await vi.waitFor(() => expect(onFailure).toHaveBeenCalledWith(new Error("submission failed")));
+    expect(mocks.bridge.close).toHaveBeenCalledOnce();
+  });
+
+  it("routes the main session key to the configured default agent", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    mocks.consult.mockResolvedValueOnce({ text: "I know my SOUL.md." });
+    await startFaceTimeTalkDriver(
+      startParams({
+        fullConfig: {
+          agents: { list: [{ id: "lobster", default: true }] },
+        },
+      }),
+    );
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Can you read SOUL.md?" },
+    });
+
+    await vi.waitFor(() =>
+      expect(mocks.consult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "lobster",
+          sessionKey: "agent:lobster:facetime:call-1",
+          spawnedBy: "main",
+          contextMode: "fork",
+          lane: "facetime:call-1",
+        }),
+      ),
+    );
+  });
+
+  it("requires custom voice instructions to consult Lobster for SOUL and identity", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    await startFaceTimeTalkDriver(
+      startParams({
+        config: resolveFaceTimeConfig({
+          whitelistHandles: ["caller@example.com"],
+          realtime: { instructions: "Speak warmly and keep answers short." },
+        }),
+      }),
+    );
+
+    expect(mocks.sessionParams?.instructions).toContain("Speak warmly and keep answers short.");
+    expect(mocks.sessionParams?.instructions).toContain("SOUL.md");
+    expect(mocks.sessionParams?.instructions).toContain("MUST call openclaw_agent_consult");
   });
 });

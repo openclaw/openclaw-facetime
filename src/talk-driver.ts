@@ -1,6 +1,9 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
+import { resolveDefaultAgentId } from "openclaw/plugin-sdk/agent-runtime";
+import { abortAgentHarnessRun } from "openclaw/plugin-sdk/agent-harness";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import {
+  buildRealtimeVoiceAgentCancelProviderResult,
   buildRealtimeVoiceAgentConsultWorkingResponse,
   consultRealtimeVoiceAgent,
   createRealtimeVoiceBridgeSession,
@@ -53,12 +56,22 @@ function pushRecent(events: TalkEvent[], event: TalkEvent | undefined): void {
   }
 }
 
-function agentIdFromSessionKey(sessionKey: string): string {
+function agentIdFromSessionKey(sessionKey: string, config: OpenClawConfig): string {
   const normalized = sessionKey.trim();
   if (normalized.startsWith("agent:")) {
-    return normalized.split(":")[1] || "main";
+    return normalized.split(":")[1] || resolveDefaultAgentId(config);
   }
-  return "main";
+  return resolveDefaultAgentId(config);
+}
+
+const REQUIRED_AGENT_CONSULT_INSTRUCTIONS = [
+  "You are the FaceTime voice interface for the authoritative Lobster OpenClaw agent, not a separate source of personal or workspace knowledge.",
+  `Before answering any question about identity, personality, the caller or owner, SOUL.md, USER.md, memory, workspace files, tools, or current OpenClaw status or configuration, you MUST call ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} and use its result.`,
+  "Never claim that those resources are unavailable from this call. Consult the Lobster agent instead.",
+].join(" ");
+
+function buildRealtimeInstructions(instructions: string | undefined): string {
+  return [instructions?.trim(), REQUIRED_AGENT_CONSULT_INSTRUCTIONS].filter(Boolean).join("\n\n");
 }
 
 async function resolveRealtimeProviderConfigs(params: {
@@ -114,6 +127,11 @@ export async function startFaceTimeTalkDriver(params: {
     defaultModel: params.config.realtime.model,
     noRegisteredProviderMessage: "No realtime voice provider registered",
   });
+  const consultAgentId = agentIdFromSessionKey(
+    params.config.realtime.sessionKey,
+    params.fullConfig,
+  );
+  const consultSessionKey = `agent:${consultAgentId}:facetime:${params.callUUID}`;
   const talk = createTalkSessionController(
     {
       sessionId: `facetime:${params.callUUID}`,
@@ -135,6 +153,16 @@ export async function startFaceTimeTalkDriver(params: {
   let responseStartTimestampMs: number | undefined;
   let responsePlaybackStartMs: number | undefined;
   let responseGenerationDone = false;
+  const pendingAgentConsults = new Map<
+    string,
+    {
+      callId: string;
+      turnId: string;
+      name: string;
+      cancelRequested: boolean;
+      backendSettled: boolean;
+    }
+  >();
   let failurePromise: Promise<boolean> | undefined;
   let activated = false;
   let closePromise: Promise<void> | undefined;
@@ -232,6 +260,89 @@ export async function startFaceTimeTalkDriver(params: {
     });
     bridge?.submitToolResult(callId, { error });
   };
+  const abortPendingAgentConsult = async (pending: {
+    cancelRequested: boolean;
+    backendSettled: boolean;
+  }) => {
+    const storePath = params.runtime.agent.session.resolveStorePath(
+      params.fullConfig.session?.store,
+      {
+        agentId: consultAgentId,
+      },
+    );
+    // Session creation and run registration are asynchronous. Keep looking
+    // until the cancelled backend settles or the owning FaceTime call closes.
+    while (pending.cancelRequested && !pending.backendSettled && !stopped) {
+      try {
+        const sessionEntry = params.runtime.agent.session.getSessionEntry({
+          storePath,
+          sessionKey: consultSessionKey,
+          readConsistency: "latest",
+        });
+        const sessionId = sessionEntry?.sessionId?.trim();
+        if (sessionId && abortAgentHarnessRun(sessionId)) {
+          return;
+        }
+      } catch (error) {
+        params.logger.debug?.(
+          `[facetime] agent consult abort lookup retry: ${formatErrorMessage(error)}`,
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+    }
+  };
+  const cancelPendingAgentConsults = () => {
+    for (const pending of pendingAgentConsults.values()) {
+      if (pending.cancelRequested) {
+        continue;
+      }
+      pending.cancelRequested = true;
+      void abortPendingAgentConsult(pending);
+      const result = buildRealtimeVoiceAgentCancelProviderResult(
+        "The caller continued speaking before this consult completed.",
+      );
+      void (async () => {
+        try {
+          if (!bridge) {
+            throw new Error("Realtime bridge unavailable during agent consult cancellation");
+          }
+          const options =
+            bridge.bridge.supportsToolResultSuppression === false
+              ? undefined
+              : { suppressResponse: true };
+          await bridge.submitToolResult(pending.callId, result, options);
+          if (pendingAgentConsults.get(pending.callId) !== pending) {
+            return;
+          }
+          pendingAgentConsults.delete(pending.callId);
+          remember({
+            type: "tool.result",
+            turnId: pending.turnId,
+            callId: pending.callId,
+            payload: { name: pending.name, result },
+            final: true,
+          });
+        } catch (error) {
+          if (pendingAgentConsults.get(pending.callId) !== pending) {
+            return;
+          }
+          pendingAgentConsults.delete(pending.callId);
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          remember({
+            type: "tool.error",
+            turnId: pending.turnId,
+            callId: pending.callId,
+            payload: { name: pending.name, error: formatErrorMessage(normalized) },
+            final: true,
+          });
+          const safeToClose = await reportFailure(normalized);
+          if (safeToClose) {
+            await close("consult-cancel-failed");
+          }
+        }
+      })();
+    }
+  };
   const handleToolCall = (event: RealtimeVoiceToolCallEvent) => {
     const callId = event.callId || event.itemId;
     if (event.name !== REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME) {
@@ -239,6 +350,14 @@ export async function startFaceTimeTalkDriver(params: {
       return;
     }
     const turnId = ensureTurn();
+    const pendingConsult = {
+      callId,
+      turnId,
+      name: event.name,
+      cancelRequested: false,
+      backendSettled: false,
+    };
+    pendingAgentConsults.set(callId, pendingConsult);
     remember({
       type: "tool.call",
       turnId,
@@ -261,10 +380,12 @@ export async function startFaceTimeTalkDriver(params: {
       cfg: params.fullConfig,
       agentRuntime: params.runtime.agent,
       logger: params.logger,
-      agentId: agentIdFromSessionKey(params.config.realtime.sessionKey),
-      sessionKey: params.config.realtime.sessionKey,
+      agentId: consultAgentId,
+      sessionKey: consultSessionKey,
+      spawnedBy: params.config.realtime.sessionKey,
+      contextMode: "fork",
       messageProvider: "facetime",
-      lane: "facetime",
+      lane: `facetime:${params.callUUID}`,
       runIdPrefix: `facetime:${params.callUUID}`,
       args: event.args,
       transcript,
@@ -276,6 +397,11 @@ export async function startFaceTimeTalkDriver(params: {
       extraSystemPrompt: CONSULT_SYSTEM_PROMPT,
     })
       .then((result) => {
+        pendingConsult.backendSettled = true;
+        if (pendingAgentConsults.get(callId) !== pendingConsult || pendingConsult.cancelRequested) {
+          return;
+        }
+        pendingAgentConsults.delete(callId);
         remember({
           type: "tool.result",
           turnId,
@@ -286,6 +412,11 @@ export async function startFaceTimeTalkDriver(params: {
         bridge?.submitToolResult(callId, result);
       })
       .catch((error: Error) => {
+        pendingConsult.backendSettled = true;
+        if (pendingAgentConsults.get(callId) !== pendingConsult || pendingConsult.cancelRequested) {
+          return;
+        }
+        pendingAgentConsults.delete(callId);
         const message = formatErrorMessage(error);
         remember({
           type: "tool.error",
@@ -355,7 +486,9 @@ export async function startFaceTimeTalkDriver(params: {
       provider: resolved.provider,
       providerConfig: resolved.providerConfig,
       audioFormat: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
-      instructions: params.config.realtime.instructions,
+      // Configured voice/personality instructions remain customizable, but the
+      // authoritative-agent boundary must not disappear when they are replaced.
+      instructions: buildRealtimeInstructions(params.config.realtime.instructions),
       autoRespondToAudio: true,
       triggerGreetingOnReady: false,
       initialGreetingInstructions: "Greet the caller briefly and say you are listening.",
@@ -429,6 +562,10 @@ export async function startFaceTimeTalkDriver(params: {
           });
         }
         if (event.type === "input_audio_buffer.speech_started") {
+          // A caller follow-up supersedes any consult started for the previous
+          // utterance. Close its provider tool call immediately so a slow agent
+          // cannot block the new turn, then ignore its eventual settlement.
+          cancelPendingAgentConsults();
           const playbackActive =
             responseStartTimestampMs !== undefined && (pump?.queuedAudioMs() ?? 0) > 0;
           if (responseStartTimestampMs !== undefined) {

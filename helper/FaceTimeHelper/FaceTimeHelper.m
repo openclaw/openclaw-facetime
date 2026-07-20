@@ -154,15 +154,18 @@ FACETIMEHELPER *plugin;
         @"is_sending_video": [NSNumber numberWithBool:[call isSendingVideo]] ?: [NSNull null],
         @"is_uplink_muted": [NSNumber numberWithBool:[call isUplinkMuted]] ?: [NSNull null],
         @"is_outgoing": [NSNumber numberWithBool:[call isOutgoing]] ?: [NSNull null],
+        @"local_meter_level": [NSNumber numberWithFloat:[call localMeterLevel]] ?: [NSNull null],
+        @"remote_meter_level": [NSNumber numberWithFloat:[call remoteMeterLevel]] ?: [NSNull null],
     };
     NSDictionary *message = @{@"event": @"ft-call-status-changed", @"data": data};
     [[NetworkController sharedInstance] sendMessage: message];
 }
 
--(NSDictionary*) startConversationAudioForCall:(TUCall*)call muted:(BOOL)muted {
+-(NSDictionary*) startConversationAudioForCall:(TUCall*)call muted:(BOOL)muted preserveVideo:(BOOL)preserveVideo {
     NSMutableDictionary *result = [NSMutableDictionary dictionary];
     TUConversation *conversation = [[TUCallCenter sharedInstance] activeConversationForCall:call];
     NSUUID *conversationUUID = [conversation UUID];
+    BOOL videoActive = preserveVideo || [conversation isVideoEnabled] || [call isSendingVideo];
     result[@"conversation_uuid"] = [conversationUUID UUIDString] ?: [NSNull null];
     result[@"conversation_group_uuid"] = [[conversation groupUUID] UUIDString] ?: [NSNull null];
     
@@ -188,7 +191,7 @@ FACETIMEHELPER *plugin;
         [conversation setAudioEnabled:!muted];
         didSetConversationAudioEnabled = YES;
     }
-    if (!muted && [conversation respondsToSelector:@selector(setAvMode:)]) {
+    if (!muted && !videoActive && [conversation respondsToSelector:@selector(setAvMode:)]) {
         [conversation setAvMode:1];
         didSetConversationAVMode = YES;
     }
@@ -222,15 +225,19 @@ FACETIMEHELPER *plugin;
             );
             didSetSendingAudio = YES;
         }
-        TUConversationManager *tuConversationManager = [[TUConversationManager alloc] init];
-        if ([tuConversationManager respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
-            [tuConversationManager setLocalParticipantAudioVideoMode:1 forConversationUUID:conversationUUID];
-            didSetLocalParticipantMode = YES;
-        }
-        TUConversationManagerXPCClient *xpcClient = [[TUConversationManagerXPCClient alloc] init];
-        if ([xpcClient respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
-            [xpcClient setLocalParticipantAudioVideoMode:1 forConversationUUID:conversationUUID];
-            didSetLocalParticipantModeViaXPC = YES;
+        // Mode 1 is the helper's audio-only fallback. Preserve an existing
+        // FaceTime video mode while changing only the call's audio route.
+        if (!videoActive) {
+            TUConversationManager *tuConversationManager = [[TUConversationManager alloc] init];
+            if ([tuConversationManager respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
+                [tuConversationManager setLocalParticipantAudioVideoMode:1 forConversationUUID:conversationUUID];
+                didSetLocalParticipantMode = YES;
+            }
+            TUConversationManagerXPCClient *xpcClient = [[TUConversationManagerXPCClient alloc] init];
+            if ([xpcClient respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
+                [xpcClient setLocalParticipantAudioVideoMode:1 forConversationUUID:conversationUUID];
+                didSetLocalParticipantModeViaXPC = YES;
+            }
         }
     }
     
@@ -383,7 +390,7 @@ FACETIMEHELPER *plugin;
         BOOL muted = [data[@"muted"] boolValue];
         BOOL didSetMuted = [call setMuted:muted];
         [call setUplinkMuted:muted];
-        NSDictionary *conversationAudioResult = [self startConversationAudioForCall:call muted:muted];
+        NSDictionary *conversationAudioResult = [self startConversationAudioForCall:call muted:muted preserveVideo:NO];
         if (transaction != nil) {
             NSMutableDictionary *response = [@{
                 @"transactionId": transaction,
@@ -407,8 +414,32 @@ FACETIMEHELPER *plugin;
         }
         
         [call setUplinkMuted:NO];
+        TUConversation *conversation = [[TUCallCenter sharedInstance] activeConversationForCall:call];
+        BOOL wasSendingVideo = [call isSendingVideo];
+        BOOL preserveVideo = [conversation isVideoEnabled] || wasSendingVideo;
+        NSUInteger videoMode = [conversation avMode];
         [[TUCallCenter sharedInstance] startTransmissionForBargeCall:call sourceIsHandsfreeAccessory:NO];
-        NSDictionary *conversationAudioResult = [self startConversationAudioForCall:call muted:NO];
+        // Barge transmission activates FaceTime's local speaking telemetry. It
+        // can also reset an active video conversation, so restore its prior mode.
+        if (preserveVideo) {
+            NSUUID *conversationUUID = [conversation UUID];
+            if ([conversation respondsToSelector:@selector(setAvMode:)]) {
+                [conversation setAvMode:videoMode];
+            }
+            // Only restore the local participant's video mode when the camera
+            // was already sending. A receive-only video call may have camera off.
+            if (wasSendingVideo) {
+                TUConversationManager *manager = [[TUConversationManager alloc] init];
+                if ([manager respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
+                    [manager setLocalParticipantAudioVideoMode:videoMode forConversationUUID:conversationUUID];
+                }
+                TUConversationManagerXPCClient *xpcClient = [[TUConversationManagerXPCClient alloc] init];
+                if ([xpcClient respondsToSelector:@selector(setLocalParticipantAudioVideoMode:forConversationUUID:)]) {
+                    [xpcClient setLocalParticipantAudioVideoMode:videoMode forConversationUUID:conversationUUID];
+                }
+            }
+        }
+        NSDictionary *conversationAudioResult = [self startConversationAudioForCall:call muted:NO preserveVideo:preserveVideo];
         if (transaction != nil) {
             NSMutableDictionary *response = [@{
                 @"transactionId": transaction,

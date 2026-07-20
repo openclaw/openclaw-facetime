@@ -26,6 +26,8 @@ describe("FaceTime call events", () => {
         is_sending_transmission: true,
         is_sending_video: false,
         is_uplink_muted: false,
+        local_meter_level: "0.37",
+        remote_meter_level: 0.18,
         handle: { value: "mailto:omar@example.com" },
       },
     });
@@ -42,6 +44,8 @@ describe("FaceTime call events", () => {
     expect(event?.data.is_sending_transmission).toBe(true);
     expect(event?.data.is_sending_video).toBe(false);
     expect(event?.data.is_uplink_muted).toBe(false);
+    expect(event?.data.local_meter_level).toBe(0.37);
+    expect(event?.data.remote_meter_level).toBe(0.18);
     expect(isIncomingRingingCall(event!)).toBe(true);
     expect(isActiveCall(event!)).toBe(false);
     expect(isEndedCall(event!)).toBe(false);

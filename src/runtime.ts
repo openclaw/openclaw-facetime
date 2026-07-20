@@ -38,6 +38,10 @@ type ActiveFaceTimeCall = {
   conversationVideoEnabled?: boolean;
   conversationAVMode?: number;
   conversationResolvedAudioVideoMode?: number;
+  localMeterLevel?: number;
+  remoteMeterLevel?: number;
+  maxLocalMeterLevel?: number;
+  maxRemoteMeterLevel?: number;
   audioReady: boolean;
   audioTransport?: {
     captureBinary: string;
@@ -77,6 +81,10 @@ export type FaceTimeRuntimeStatus = {
     conversationVideoEnabled?: boolean;
     conversationAVMode?: number;
     conversationResolvedAudioVideoMode?: number;
+    localMeterLevel?: number;
+    remoteMeterLevel?: number;
+    maxLocalMeterLevel?: number;
+    maxRemoteMeterLevel?: number;
     realtimeActive: boolean;
     audioReady: boolean;
     audioTransport?: ActiveFaceTimeCall["audioTransport"];
@@ -148,6 +156,23 @@ function updateCallStatus(call: ActiveFaceTimeCall, event: FaceTimeCallStatusEve
     typeof event.data.conversation_resolved_audio_video_mode === "number"
       ? event.data.conversation_resolved_audio_video_mode
       : call.conversationResolvedAudioVideoMode;
+  call.localMeterLevel =
+    typeof event.data.local_meter_level === "number"
+      ? event.data.local_meter_level
+      : call.localMeterLevel;
+  call.remoteMeterLevel =
+    typeof event.data.remote_meter_level === "number"
+      ? event.data.remote_meter_level
+      : call.remoteMeterLevel;
+  if (typeof event.data.local_meter_level === "number") {
+    call.maxLocalMeterLevel = Math.max(call.maxLocalMeterLevel ?? 0, event.data.local_meter_level);
+  }
+  if (typeof event.data.remote_meter_level === "number") {
+    call.maxRemoteMeterLevel = Math.max(
+      call.maxRemoteMeterLevel ?? 0,
+      event.data.remote_meter_level,
+    );
+  }
 }
 
 export async function createFaceTimeRuntime(params: {
@@ -289,7 +314,9 @@ export async function createFaceTimeRuntime(params: {
     });
     call.audioReady = false;
     call.audioTransport = undefined;
-    params.logger.info(`[facetime] call closed: ${callUUID} (${reason})`);
+    params.logger.info(
+      `[facetime] call closed: ${callUUID} (${reason}); meter max local=${call.maxLocalMeterLevel ?? "unavailable"} remote=${call.maxRemoteMeterLevel ?? "unavailable"}`,
+    );
   };
 
   const attemptCarrierHangup = async (
@@ -612,6 +639,10 @@ export async function createFaceTimeRuntime(params: {
           conversationVideoEnabled: call.conversationVideoEnabled,
           conversationAVMode: call.conversationAVMode,
           conversationResolvedAudioVideoMode: call.conversationResolvedAudioVideoMode,
+          localMeterLevel: call.localMeterLevel,
+          remoteMeterLevel: call.remoteMeterLevel,
+          maxLocalMeterLevel: call.maxLocalMeterLevel,
+          maxRemoteMeterLevel: call.maxRemoteMeterLevel,
           realtimeActive: Boolean(call.talk),
           audioReady: call.audioReady,
           audioTransport: call.audioTransport

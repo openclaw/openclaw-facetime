@@ -23,6 +23,8 @@ export type FaceTimeCallStatusData = {
   is_sending_transmission?: unknown;
   is_sending_video?: unknown;
   is_uplink_muted?: unknown;
+  local_meter_level?: unknown;
+  remote_meter_level?: unknown;
 };
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -33,6 +35,12 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function readFiniteNumber(value: unknown): number | undefined {
+  const number =
+    typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : undefined;
 }
 
 const handleValueKeys = new Set([
@@ -139,6 +147,8 @@ export function normalizeFaceTimeCallEvent(value: unknown): FaceTimeCallStatusEv
       is_sending_transmission: data.is_sending_transmission === true,
       is_sending_video: data.is_sending_video === true,
       is_uplink_muted: data.is_uplink_muted === true,
+      local_meter_level: readFiniteNumber(data.local_meter_level),
+      remote_meter_level: readFiniteNumber(data.remote_meter_level),
     },
   };
 }
