@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .DS_Store
+WORKLOG.md
+helper-ipc-key
 
 helper/Pods/
 helper/*.xcworkspace/xcuserdata/

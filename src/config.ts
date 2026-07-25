@@ -113,6 +113,8 @@ export function resolveFaceTimeConfig(input: unknown): FaceTimeConfig {
     whitelistHandles: resolveStringArray(raw.whitelistHandles),
     realtime: {
       provider: normalizeOptionalString(realtime.provider) ?? "openai",
+      // TODO(gpt-live): Add GPT-Live-1 and GPT-Live-1 mini when OpenAI exposes them via the API.
+      // They currently return `invalid_model`; review full-duplex transport semantics before enabling them.
       model: normalizeOptionalString(realtime.model) ?? "gpt-realtime-2.1",
       voice: normalizeOptionalString(realtime.voice) ?? "marin",
       sessionKey: normalizeOptionalString(realtime.sessionKey) ?? "main",

@@ -76,7 +76,11 @@ static id sharedInstance = nil;
 
 - (void)socket:(GCDAsyncSocket *)sock didConnectToHost:(NSString *)host port:(UInt16)port {
     DLog("FACETIMEHELPER: socket:%{public}p didConnectToHost:%{public}@ port:%{public}hu", sock, host, port);
-    NSDictionary *message = @{@"event": @"ping", @"message": @"Helper Connected!"};
+    NSDictionary *message = @{
+        @"event": @"ping",
+        @"message": @"Helper Connected!",
+        @"bundle_identifier": [[NSBundle mainBundle] bundleIdentifier] ?: @"",
+    };
     [self sendMessage:message];
 }
 

@@ -112,6 +112,22 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
     );
 
     api.registerGatewayMethod(
+      "facetime.dial",
+      async ({ params, respond }: GatewayRequestHandlerOptions) => {
+        try {
+          const rt = await ensureRuntime();
+          const record = params && typeof params === "object" ? params : {};
+          const handle = "handle" in record ? (record as { handle?: unknown }).handle : undefined;
+          const mode = "mode" in record ? (record as { mode?: unknown }).mode : undefined;
+          respond(true, { ok: true, ...(await rt.dial({ handle, mode })) });
+        } catch (error) {
+          respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
+        }
+      },
+      { scope: "operator.write" },
+    );
+
+    api.registerGatewayMethod(
       "facetime.hangup",
       async ({ params, respond }: GatewayRequestHandlerOptions) => {
         try {

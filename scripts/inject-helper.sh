@@ -3,6 +3,22 @@ set -euo pipefail
 
 derived_root="${HOME}/Library/Developer/Xcode/DerivedData"
 staged_macabi="${HOME}/Library/Containers/com.apple.FaceTime/Data/tmp/FaceTimeHelper.dylib"
+target_app="${FACETIME_HELPER_APP:-FaceTime}"
+
+case "${target_app}" in
+  FaceTime)
+    target_bundle="com.apple.FaceTime"
+    target_executable="/System/Applications/FaceTime.app/Contents/MacOS/FaceTime"
+    ;;
+  Phone)
+    target_bundle="com.apple.mobilephone"
+    target_executable="/System/Applications/Phone.app/Contents/MacOS/Phone"
+    ;;
+  *)
+    echo "Unsupported helper app: ${target_app}. Use FaceTime or Phone." >&2
+    exit 1
+    ;;
+esac
 
 if ! DevToolsSecurity -status 2>/dev/null | grep -q "enabled"; then
   cat >&2 <<'EOF'
@@ -40,30 +56,32 @@ EOF
   exit 1
 fi
 
-unique_dylib="${HOME}/Library/Containers/com.apple.FaceTime/Data/tmp/FaceTimeHelper-$(date +%Y%m%d%H%M%S)-$$.dylib"
+target_tmp="${HOME}/Library/Containers/${target_bundle}/Data/tmp"
+mkdir -p "${target_tmp}"
+unique_dylib="${target_tmp}/FaceTimeHelper-$(date +%Y%m%d%H%M%S)-$$.dylib"
 cp "${dylib}" "${unique_dylib}"
 dylib="${unique_dylib}"
 
 target_pid="${FACETIME_HELPER_PID:-}"
-target_name="FaceTime app"
+target_name="${target_app} app"
 
 if [[ -z "${target_pid}" ]]; then
-  target_pid="$(pgrep -f '/System/Applications/FaceTime.app/Contents/MacOS/FaceTime' | head -1 || true)"
+  target_pid="$(pgrep -f "${target_executable}" | head -1 || true)"
 fi
 
 if [[ -z "${target_pid}" ]]; then
-  open -a FaceTime
+  open -a "${target_app}"
   sleep 2
-  target_pid="$(pgrep -f '/System/Applications/FaceTime.app/Contents/MacOS/FaceTime' | head -1 || true)"
+  target_pid="$(pgrep -f "${target_executable}" | head -1 || true)"
 fi
 
-if [[ -z "${target_pid}" ]]; then
+if [[ -z "${target_pid}" && "${target_app}" == "FaceTime" ]]; then
   target_name="FaceTime conversation service"
   target_pid="$(pgrep -f '/com.apple.FaceTime.FTConversationService' | head -1 || true)"
 fi
 
 if [[ -z "${target_pid}" ]]; then
-  echo "FaceTime is not running. Open FaceTime, then rerun this script." >&2
+  echo "${target_app} is not running. Open ${target_app}, then rerun this script." >&2
   exit 1
 fi
 

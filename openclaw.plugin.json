@@ -52,7 +52,7 @@
     "helperPort": { "label": "Helper Port", "advanced": true },
     "whitelistHandles": {
       "label": "Allowed FaceTime Handles",
-      "help": "Only incoming calls from these handle values are auto-answered."
+      "help": "Incoming calls are auto-answered and outbound calls are allowed only for these handles."
     },
     "realtime.provider": { "label": "Realtime Provider", "advanced": true },
     "realtime.model": { "label": "Realtime Model", "advanced": true },

@@ -1,17 +1,68 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID, timingSafeEqual } from "node:crypto";
 import net from "node:net";
 import type { RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import { formatErrorMessage } from "./errors.js";
+import type { FaceTimeDialRequest } from "./outbound-call.js";
 
 type HelperSocketServerParams = {
   host: string;
   port: number;
   logger: RuntimeLogger;
+  ipcKey: string;
   onMessage: (message: unknown) => void;
-  onDisconnect?: () => void;
+  onConnect?: () => void;
+  onDisconnect?: (bundleIdentifier: string) => void;
 };
 
 export type HelperActionResult = Record<string, unknown>;
+
+const FACETIME_DIAL_HELPER_BUNDLES = new Set([
+  "com.apple.FaceTime",
+  "com.apple.FaceTime.FTConversationService",
+]);
+const FACETIME_HELPER_BUNDLES = new Set([
+  ...FACETIME_DIAL_HELPER_BUNDLES,
+  "com.apple.mobilephone",
+  "com.apple.TelephonyUtilities",
+]);
+
+function helperHmac(ipcKey: string, message: string): string {
+  return createHmac("sha256", ipcKey).update(message).digest("hex");
+}
+
+function secureStringsEqual(first: string, second: string): boolean {
+  const firstBuffer = Buffer.from(first);
+  const secondBuffer = Buffer.from(second);
+  return (
+    firstBuffer.length > 0 &&
+    firstBuffer.length === secondBuffer.length &&
+    timingSafeEqual(firstBuffer, secondBuffer)
+  );
+}
+
+export class FaceTimeHelperActionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FaceTimeHelperActionError";
+  }
+}
+
+export class FaceTimeHelperAmbiguousError extends Error {
+  constructor(
+    message: string,
+    readonly result: HelperActionResult = {},
+  ) {
+    super(message);
+    this.name = "FaceTimeHelperAmbiguousError";
+  }
+}
+
+export class FaceTimeHelperUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FaceTimeHelperUnavailableError";
+  }
+}
 
 type PendingRpc = {
   resolve: (result: HelperActionResult) => void;
@@ -22,6 +73,8 @@ type PendingRpc = {
 export class FaceTimeHelperSocketServer {
   readonly #server: net.Server;
   readonly #sockets = new Set<net.Socket>();
+  readonly #socketBundleIdentifiers = new Map<net.Socket, string>();
+  readonly #socketAuthChallenges = new Map<net.Socket, string>();
   readonly #pending = new Map<string, PendingRpc>();
   readonly #logger: RuntimeLogger;
   #started = false;
@@ -71,11 +124,48 @@ export class FaceTimeHelperSocketServer {
   }
 
   async answerCall(callUUID: string): Promise<HelperActionResult> {
-    return await this.#sendAction("answer-call", { callUUID });
+    return await this.#sendActionToAll("answer-call", { callUUID });
+  }
+
+  async startCall(
+    request: FaceTimeDialRequest,
+    dialID: string,
+    requestedAt: string,
+  ): Promise<HelperActionResult> {
+    return await this.#sendAction("start-call", { ...request, dialID, requestedAt });
+  }
+
+  async findOutgoingCall(
+    handle: string,
+    callUUID?: string,
+    dialID?: string,
+    proxyIdentifier?: string,
+    requestedAt?: string,
+    mode?: FaceTimeDialRequest["mode"],
+  ): Promise<HelperActionResult> {
+    return await this.#sendActionToAll("find-outgoing-call", {
+      handle,
+      ...(callUUID ? { callUUID } : {}),
+      ...(dialID ? { dialID } : {}),
+      ...(proxyIdentifier ? { proxyIdentifier } : {}),
+      ...(requestedAt ? { requestedAt } : {}),
+      ...(mode ? { mode } : {}),
+    });
+  }
+
+  async cancelOutgoingCall(params: {
+    dialID: string;
+    handle: string;
+    callUUID?: string;
+    proxyIdentifier?: string;
+    requestedAt?: string;
+    mode?: FaceTimeDialRequest["mode"];
+  }): Promise<HelperActionResult> {
+    return await this.#sendActionToAll("cancel-outgoing-call", params);
   }
 
   async leaveCall(callUUID: string): Promise<HelperActionResult> {
-    return await this.#sendAction("leave-call", { callUUID });
+    return await this.#sendActionToAll("leave-call", { callUUID });
   }
 
   async safetyMute(callUUID: string): Promise<HelperActionResult> {
@@ -91,7 +181,11 @@ export class FaceTimeHelperSocketServer {
   }
 
   get connectedSockets(): number {
-    return this.#sockets.size;
+    return this.#socketBundleIdentifiers.size;
+  }
+
+  get connectedHelperBundles(): string[] {
+    return [...new Set(this.#socketBundleIdentifiers.values())];
   }
 
   #handleSocket(socket: net.Socket): void {
@@ -108,7 +202,7 @@ export class FaceTimeHelperSocketServer {
         const line = buffer.slice(0, newline).trim();
         buffer = buffer.slice(buffer[newline] === "\r" ? newline + 2 : newline + 1);
         if (line) {
-          this.#handleLine(line);
+          this.#handleLine(socket, line);
         }
       }
     });
@@ -116,14 +210,17 @@ export class FaceTimeHelperSocketServer {
       this.#logger.debug?.(`[facetime] helper socket error: ${formatErrorMessage(error)}`);
     });
     socket.on("close", () => {
+      const disconnectedBundle = this.#socketBundleIdentifiers.get(socket);
       this.#sockets.delete(socket);
-      if (this.#sockets.size === 0) {
-        this.params.onDisconnect?.();
+      this.#socketBundleIdentifiers.delete(socket);
+      this.#socketAuthChallenges.delete(socket);
+      if (disconnectedBundle) {
+        this.params.onDisconnect?.(disconnectedBundle);
       }
     });
   }
 
-  #handleLine(line: string): void {
+  #handleLine(socket: net.Socket, line: string): void {
     let parsed: unknown;
     try {
       parsed = JSON.parse(line);
@@ -132,6 +229,39 @@ export class FaceTimeHelperSocketServer {
       return;
     }
     const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    if (record.event === "ping") {
+      const nonce = randomUUID();
+      this.#socketAuthChallenges.set(socket, nonce);
+      socket.write(`${JSON.stringify({ event: "auth-challenge", nonce })}\r\n`);
+      return;
+    } else if (record.event === "auth-response") {
+      const bundleIdentifier =
+        typeof record.bundle_identifier === "string" ? record.bundle_identifier.trim() : "";
+      const nonce = typeof record.nonce === "string" ? record.nonce : "";
+      const receivedAuth = typeof record.auth === "string" ? record.auth : "";
+      const expectedNonce = this.#socketAuthChallenges.get(socket);
+      const expectedAuth = helperHmac(
+        this.params.ipcKey,
+        `helper\n${bundleIdentifier}\n${nonce}`,
+      );
+      if (
+        expectedNonce === nonce &&
+        FACETIME_HELPER_BUNDLES.has(bundleIdentifier) &&
+        secureStringsEqual(receivedAuth, expectedAuth)
+      ) {
+        const wasAuthenticated = this.#socketBundleIdentifiers.has(socket);
+        this.#socketBundleIdentifiers.set(socket, bundleIdentifier);
+        this.#socketAuthChallenges.delete(socket);
+        if (!wasAuthenticated) {
+          this.params.onConnect?.();
+        }
+      }
+      return;
+    }
+    if (!this.#socketBundleIdentifiers.has(socket)) {
+      this.#logger.warn?.("[facetime] ignored message from unauthenticated helper socket");
+      return;
+    }
     const transactionId = typeof record.transactionId === "string" ? record.transactionId : "";
     if (transactionId && this.#pending.has(transactionId)) {
       const pending = this.#pending.get(transactionId);
@@ -139,7 +269,11 @@ export class FaceTimeHelperSocketServer {
       if (pending) {
         clearTimeout(pending.timeout);
         if (typeof record.error === "string" && record.error) {
-          pending.reject(new Error(record.error));
+          pending.reject(
+            record.ambiguous === true
+              ? new FaceTimeHelperAmbiguousError(record.error, record)
+              : new FaceTimeHelperActionError(record.error),
+          );
         } else {
           pending.resolve(record);
         }
@@ -153,43 +287,47 @@ export class FaceTimeHelperSocketServer {
     action: string,
     data: Record<string, unknown>,
   ): Promise<HelperActionResult> {
-    const socket = [...this.#sockets].find((candidate) => !candidate.destroyed);
+    const socket = [...this.#sockets].find(
+      (candidate) =>
+        !candidate.destroyed &&
+        FACETIME_DIAL_HELPER_BUNDLES.has(this.#socketBundleIdentifiers.get(candidate) ?? ""),
+    );
     if (!socket) {
-      throw new Error("FaceTime helper is not connected to the facetime event socket");
+      throw new FaceTimeHelperUnavailableError(
+        "Authenticated FaceTime dialing helper is not connected to the facetime event socket",
+      );
     }
-    const transactionId = randomUUID();
-    const payload = JSON.stringify({ action, data, transactionId });
-    return await new Promise<HelperActionResult>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        this.#pending.delete(transactionId);
-        reject(new Error(`FaceTime helper action timed out: ${action}`));
-      }, 5_000);
-      this.#pending.set(transactionId, { resolve, reject, timeout });
-      socket.write(`${payload}\r\n`, (error) => {
-        if (!error) {
-          return;
-        }
-        clearTimeout(timeout);
-        this.#pending.delete(transactionId);
-        reject(error);
-      });
-    });
+    return await this.#sendActionOnSocket(socket, action, data);
   }
 
   async #sendActionToAll(
     action: string,
     data: Record<string, unknown>,
   ): Promise<HelperActionResult> {
-    const sockets = [...this.#sockets].filter((candidate) => !candidate.destroyed);
+    const sockets = [...this.#sockets].filter(
+      (candidate) =>
+        !candidate.destroyed &&
+        FACETIME_HELPER_BUNDLES.has(this.#socketBundleIdentifiers.get(candidate) ?? ""),
+    );
     if (sockets.length === 0) {
-      throw new Error("FaceTime helper is not connected to the facetime event socket");
+      throw new FaceTimeHelperUnavailableError(
+        "FaceTime helper is not connected to the facetime event socket",
+      );
     }
     const results = await Promise.allSettled(
       sockets.map((socket) => this.#sendActionOnSocket(socket, action, data)),
     );
-    const fulfilled = results
-      .filter((result): result is PromiseFulfilledResult<HelperActionResult> => result.status === "fulfilled")
-      .map((result) => result.value);
+    const fulfilled = results.flatMap((result, index) =>
+      result.status === "fulfilled"
+        ? [
+            {
+              ...result.value,
+              helperBundleIdentifier:
+                this.#socketBundleIdentifiers.get(sockets[index]) ?? "unknown",
+            },
+          ]
+        : [],
+    );
     if (fulfilled.length > 0) {
       return {
         helpersContacted: sockets.length,
@@ -211,7 +349,20 @@ export class FaceTimeHelperSocketServer {
     data: Record<string, unknown>,
   ): Promise<HelperActionResult> {
     const transactionId = randomUUID();
-    const payload = JSON.stringify({ action, data, transactionId });
+    const authNonce = randomUUID();
+    const dataJSON = JSON.stringify(data);
+    const auth = helperHmac(
+      this.params.ipcKey,
+      `action\n${action}\n${transactionId}\n${authNonce}\n${dataJSON}`,
+    );
+    const payload = JSON.stringify({
+      action,
+      transactionId,
+      auth_nonce: authNonce,
+      data,
+      data_json: dataJSON,
+      auth,
+    });
     return await new Promise<HelperActionResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.#pending.delete(transactionId);

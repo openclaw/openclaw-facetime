@@ -1,5 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { access } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { access, readFile } from "node:fs/promises";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
 import { OPENCLAW_FEED_DEVICE, OPENCLAW_MIC_DEVICE } from "./audio-pump.js";
@@ -7,6 +10,7 @@ import {
   isActiveCall,
   isEndedCall,
   isIncomingRingingCall,
+  isOutgoingRingingCall,
   isWhitelistedFaceTimeCall,
   normalizeFaceTimeCallEvent,
   normalizeFaceTimeHandle,
@@ -15,7 +19,24 @@ import {
 } from "./call-events.js";
 import { resolveFaceTimeConfig, validateFaceTimeConfig, type FaceTimeConfig } from "./config.js";
 import { formatErrorMessage } from "./errors.js";
-import { FaceTimeHelperSocketServer, type HelperActionResult } from "./helper-rpc.js";
+import {
+  FaceTimeHelperActionError,
+  FaceTimeHelperAmbiguousError,
+  FaceTimeHelperSocketServer,
+  FaceTimeHelperUnavailableError,
+  type HelperActionResult,
+} from "./helper-rpc.js";
+import {
+  doesPendingFaceTimeDialHaveCallUUID,
+  doesFaceTimeCallMatchPendingDial,
+  normalizeFaceTimeOutboundIdentityEvent,
+  resolveFaceTimeDialRequest,
+  resolveFaceTimeDialResult,
+  retainFaceTimeDialCallUUID,
+  type FaceTimeDialMode,
+  type FaceTimeDialResult,
+  type PendingFaceTimeDial,
+} from "./outbound-call.js";
 import { assertPairedAudioTransport } from "./paired-audio-transport.js";
 import { ensureCaptureBinary } from "./plugin-paths.js";
 import { runFaceTimePreflight, type FaceTimePreflightResult } from "./preflight.js";
@@ -25,6 +46,7 @@ import { playFaceTimeTestAudio } from "./test-audio.js";
 
 type ActiveFaceTimeCall = {
   callUUID: string;
+  callUUIDAliases?: Set<string>;
   lifecycleAbort: AbortController;
   handle?: string;
   callStatus?: number;
@@ -63,10 +85,26 @@ type ActiveFaceTimeCall = {
   carrierHangupRetryTimer?: NodeJS.Timeout;
 };
 
+const OUTBOUND_RECONCILE_ATTEMPTS = 12;
+const OUTBOUND_RECONCILE_INTERVAL_MS = 250;
+const OUTBOUND_RECONCILE_DELAY_MS = 1_000;
+const OUTBOUND_DIAL_HELPER_BUNDLES = new Set([
+  "com.apple.FaceTime",
+  "com.apple.FaceTime.FTConversationService",
+]);
+
 export type FaceTimeRuntimeStatus = {
   enabled: true;
   helperConnected: boolean;
   processOutputSuppressed: boolean;
+  outboundCallPending?: {
+    dialID: string;
+    delivery: PendingFaceTimeDial["delivery"];
+    handle: string;
+    mode: FaceTimeDialMode;
+    requestedAt: string;
+    proxyIdentifier?: string;
+  };
   calls: Array<{
     callUUID: string;
     handle?: string;
@@ -99,7 +137,8 @@ export type FaceTimeRuntime = {
   config: FaceTimeConfig;
   status(): Promise<FaceTimeRuntimeStatus>;
   preflight(): Promise<FaceTimePreflightResult>;
-  hangup(params?: { callUUID?: unknown }): Promise<{ callUUID: string }>;
+  dial(params: { handle: unknown; mode?: unknown }): Promise<FaceTimeDialResult>;
+  hangup(params?: { callUUID?: unknown }): Promise<{ callUUID?: string; dialID?: string }>;
   testAudio(params?: { phrase?: unknown }): Promise<{ phrase: string; deviceName: string }>;
   stop(): Promise<void>;
 };
@@ -192,16 +231,229 @@ export async function createFaceTimeRuntime(params: {
   }
 
   const calls = new Map<string, ActiveFaceTimeCall>();
+  let outboundDialInFlight: Promise<FaceTimeDialResult> | undefined;
+  let outboundCallPending: PendingFaceTimeDial | undefined;
+  let outboundReconcileTimer: NodeJS.Timeout | undefined;
   const captureBinary = await ensureCaptureBinary({
     pluginRoot: params.pluginRoot,
     runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
   });
+  const helperIpcKeyPath = join(
+    homedir(),
+    "Library",
+    "Application Support",
+    "OpenClaw",
+    "FaceTime",
+    "helper-ipc-key",
+  );
+  const helperIpcKey = (await readFile(helperIpcKeyPath, "utf8")).trim();
+  if (!/^[\da-f]{64}$/u.test(helperIpcKey)) {
+    throw new Error(
+      `Invalid FaceTime helper authentication token. Rebuild with pnpm build:helper:macabi.`,
+    );
+  }
   let stopping = false;
+  const clearOutboundCallPending = () => {
+    if (outboundReconcileTimer) {
+      clearTimeout(outboundReconcileTimer);
+      outboundReconcileTimer = undefined;
+    }
+    outboundCallPending = undefined;
+  };
+  const readHelperResults = (result: HelperActionResult): HelperActionResult[] =>
+    Array.isArray(result.helperResults)
+      ? result.helperResults.filter(
+          (entry): entry is HelperActionResult => Boolean(entry && typeof entry === "object"),
+        )
+      : [result];
+  const readOutboundCallUUID = (result: HelperActionResult): string | undefined =>
+    readHelperResults(result)
+      .map((entry) =>
+        typeof entry.call_uuid === "string" && entry.call_uuid.trim()
+          ? entry.call_uuid.trim()
+          : undefined,
+      )
+      .find((value) => Boolean(value));
+  const readOutboundProxyIdentifier = (result: HelperActionResult): string | undefined =>
+    readHelperResults(result)
+      .map((entry) =>
+        typeof entry.proxy_identifier === "string" && entry.proxy_identifier.trim()
+          ? entry.proxy_identifier.trim()
+          : undefined,
+      )
+      .find((value) => Boolean(value));
+  const hasDialHelperConfirmation = (results: HelperActionResult[]): boolean =>
+    results.some(
+      (entry) =>
+        typeof entry.helperBundleIdentifier === "string" &&
+        OUTBOUND_DIAL_HELPER_BUNDLES.has(entry.helperBundleIdentifier),
+    );
+  const hasDefinitiveDialHelperAbsence = (results: HelperActionResult[]): boolean =>
+    results.some(
+      (entry) =>
+        typeof entry.helperBundleIdentifier === "string" &&
+        OUTBOUND_DIAL_HELPER_BUNDLES.has(entry.helperBundleIdentifier) &&
+        entry.found === false &&
+        entry.retained_outbound_dial !== true,
+    );
+  const findOutgoingCallDuringReconciliation = async (
+    handle: string,
+    callUUID?: string,
+    dialID?: string,
+    proxyIdentifier?: string,
+    requestedAt?: string,
+    mode?: FaceTimeDialMode,
+  ): Promise<HelperActionResult> => {
+    let result: HelperActionResult = { found: false };
+    for (let attempt = 0; attempt < OUTBOUND_RECONCILE_ATTEMPTS; attempt += 1) {
+      result = await helper.findOutgoingCall(
+        handle,
+        callUUID,
+        dialID,
+        proxyIdentifier,
+        requestedAt,
+        mode,
+      );
+      if (
+        readOutboundCallUUID(result) ||
+        readHelperResults(result).some((entry) => entry.found === true)
+      ) {
+        return result;
+      }
+      if (attempt + 1 < OUTBOUND_RECONCILE_ATTEMPTS) {
+        await new Promise<void>((resolve) => setTimeout(resolve, OUTBOUND_RECONCILE_INTERVAL_MS));
+      }
+    }
+    return result;
+  };
+  const reconcilePendingOutboundCall = async (): Promise<void> => {
+    const pending = outboundCallPending;
+    if (!pending) {
+      return;
+    }
+    try {
+      const result = await findOutgoingCallDuringReconciliation(
+        pending.handle,
+        pending.callUUID,
+        pending.dialID,
+        pending.proxyIdentifier,
+        pending.requestedAt,
+        pending.mode,
+      );
+      if (outboundCallPending !== pending) {
+        return;
+      }
+      const reconciledCallUUID = readOutboundCallUUID(result);
+      if (reconciledCallUUID) {
+        retainFaceTimeDialCallUUID(pending, reconciledCallUUID);
+      }
+      const reconciledProxyIdentifier = readOutboundProxyIdentifier(result);
+      if (reconciledProxyIdentifier) {
+        pending.proxyIdentifier = reconciledProxyIdentifier;
+      }
+      if (!reconciledCallUUID && !reconciledProxyIdentifier) {
+        const helperResults = readHelperResults(result);
+        const helpersContacted =
+          typeof result.helpersContacted === "number"
+            ? result.helpersContacted
+            : helperResults.length;
+        if (
+          helperResults.length === helpersContacted &&
+          hasDialHelperConfirmation(helperResults) &&
+          hasDefinitiveDialHelperAbsence(helperResults) &&
+          helperResults.every((entry) => entry.found === false)
+        ) {
+          clearOutboundCallPending();
+        }
+      }
+    } catch (error) {
+      params.logger.debug?.(
+        `[facetime] outbound dial reconciliation deferred: ${formatErrorMessage(error)}`,
+      );
+    }
+  };
+  const scheduleOutboundReconciliation = () => {
+    if (
+      stopping ||
+      outboundReconcileTimer ||
+      !outboundCallPending ||
+      helper.connectedSockets === 0
+    ) {
+      return;
+    }
+    const pending = outboundCallPending;
+    outboundReconcileTimer = setTimeout(() => {
+      outboundReconcileTimer = undefined;
+      void reconcilePendingOutboundCall().finally(() => {
+        if (outboundCallPending === pending) {
+          scheduleOutboundReconciliation();
+        }
+      });
+    }, OUTBOUND_RECONCILE_DELAY_MS);
+    outboundReconcileTimer.unref?.();
+  };
+  const cancelPendingOutboundCall = async (): Promise<{
+    callUUID?: string;
+    dialID: string;
+    handle: string;
+  } | undefined> => {
+    if (!outboundCallPending && !outboundDialInFlight) {
+      return undefined;
+    }
+    if (outboundDialInFlight) {
+      try {
+        await outboundDialInFlight;
+      } catch {
+        // Re-read pending state below. Definitive helper rejection clears it,
+        // while an ambiguous outcome retains the caller-generated dial ID.
+      }
+    }
+    const pending = outboundCallPending;
+    if (!pending) {
+      return undefined;
+    }
+    const { handle, dialID } = pending;
+    let { callUUID } = pending;
+    const result = await helper.cancelOutgoingCall({
+      dialID,
+      handle,
+      callUUID,
+      proxyIdentifier: pending.proxyIdentifier,
+      requestedAt: pending.requestedAt,
+      mode: pending.mode,
+    });
+    const helperResults = readHelperResults(result);
+    const cancelled = helperResults.some((entry) => entry.cancelled === true);
+    const helpersContacted =
+      typeof result.helpersContacted === "number" ? result.helpersContacted : helperResults.length;
+    const definitivelyAbsent =
+      helperResults.length === helpersContacted &&
+      hasDialHelperConfirmation(helperResults) &&
+      helperResults.every((entry) => entry.found === false && entry.cancelled === false);
+    if (!cancelled && !definitivelyAbsent) {
+      throw new Error("FaceTime helper could not confirm outbound call cancellation");
+    }
+    callUUID =
+      helperResults.map(readOutboundCallUUID).find((value) => Boolean(value)) ?? callUUID;
+    clearOutboundCallPending();
+    return { ...(callUUID ? { callUUID } : {}), dialID, handle };
+  };
   const helper = new FaceTimeHelperSocketServer({
     host: config.helperHost,
     port: config.helperPort,
     logger: params.logger,
+    ipcKey: helperIpcKey,
     onMessage(message) {
+      const outboundIdentity = normalizeFaceTimeOutboundIdentityEvent(message);
+      if (
+        outboundIdentity &&
+        outboundCallPending?.dialID === outboundIdentity.data.dial_id
+      ) {
+        retainFaceTimeDialCallUUID(outboundCallPending, outboundIdentity.data.call_uuid);
+        outboundCallPending.proxyIdentifier =
+          outboundIdentity.data.proxy_identifier ?? outboundCallPending.proxyIdentifier;
+        return;
+      }
       const event = normalizeFaceTimeCallEvent(message);
       if (event) {
         void handleCallEvent(event).catch((error: Error) => {
@@ -209,14 +461,17 @@ export async function createFaceTimeRuntime(params: {
         });
       }
     },
-    onDisconnect() {
+    onConnect() {
+      void reconcilePendingOutboundCall().finally(scheduleOutboundReconciliation);
+    },
+    onDisconnect(bundleIdentifier) {
       if (stopping || calls.size === 0) {
         return;
       }
       // The helper socket is the only carrier control path. Keep the process tap
       // and route monitor alive until the helper reconnects or the call ends.
       params.logger.warn(
-        "[facetime] helper disconnected during a call; retaining audio safety bridge",
+        `[facetime] ${bundleIdentifier} helper disconnected during a call; retaining audio safety bridge`,
       );
     },
   });
@@ -593,9 +848,26 @@ export async function createFaceTimeRuntime(params: {
       }
       return;
     }
+    if (isOutgoingRingingCall(event)) {
+      if (
+        outboundCallPending &&
+        doesFaceTimeCallMatchPendingDial({ event, pending: outboundCallPending })
+      ) {
+        retainFaceTimeDialCallUUID(outboundCallPending, callUUID);
+      }
+      return;
+    }
     if (isActiveCall(event)) {
+      const authorizedPending =
+        event.data.is_outgoing === true &&
+        outboundCallPending &&
+        doesFaceTimeCallMatchPendingDial({ event, pending: outboundCallPending })
+          ? outboundCallPending
+          : undefined;
+      const isAuthorizedOutboundCall = Boolean(authorizedPending);
       if (
         !calls.has(callUUID) &&
+        !isAuthorizedOutboundCall &&
         !isWhitelistedFaceTimeCall({ event, whitelistHandles: config.whitelistHandles })
       ) {
         params.logger.info(
@@ -604,9 +876,27 @@ export async function createFaceTimeRuntime(params: {
         return;
       }
       await activateCall(event);
+      if (
+        authorizedPending &&
+        outboundCallPending === authorizedPending &&
+        calls.has(callUUID)
+      ) {
+        const activeCall = calls.get(callUUID);
+        if (activeCall && authorizedPending.callUUIDAliases) {
+          activeCall.callUUIDAliases = new Set(authorizedPending.callUUIDAliases);
+        }
+        clearOutboundCallPending();
+      }
       return;
     }
     if (isEndedCall(event)) {
+      if (
+        event.data.is_outgoing === true &&
+        outboundCallPending &&
+        doesFaceTimeCallMatchPendingDial({ event, pending: outboundCallPending })
+      ) {
+        clearOutboundCallPending();
+      }
       await closeCall(callUUID, `status-${event.data.call_status}`);
     }
   };
@@ -625,6 +915,16 @@ export async function createFaceTimeRuntime(params: {
         processOutputSuppressed: [...calls.values()].some(
           (call) => call.talk?.processOutputSuppressed() === true,
         ),
+        outboundCallPending: outboundCallPending
+          ? {
+              dialID: outboundCallPending.dialID,
+              delivery: outboundCallPending.delivery,
+              handle: outboundCallPending.handle,
+              mode: outboundCallPending.mode,
+              requestedAt: outboundCallPending.requestedAt,
+              proxyIdentifier: outboundCallPending.proxyIdentifier,
+            }
+          : undefined,
         calls: [...calls.values()].map((call) => ({
           callUUID: call.callUUID,
           handle: call.handle,
@@ -660,14 +960,128 @@ export async function createFaceTimeRuntime(params: {
         })),
       };
     },
+    async dial(dialParams) {
+      if (stopping) {
+        throw new Error("cannot start an outbound FaceTime call while the plugin is stopping");
+      }
+      if (calls.size > 0) {
+        throw new Error("cannot start an outbound FaceTime call while another call is active");
+      }
+      if (outboundCallPending) {
+        throw new Error(
+          `outbound FaceTime ${outboundCallPending.mode} call is already pending for ${outboundCallPending.handle}`,
+        );
+      }
+      if (outboundDialInFlight) {
+        throw new Error("cannot start an outbound FaceTime call while another dial is in flight");
+      }
+      const request = resolveFaceTimeDialRequest({
+        handle: dialParams.handle,
+        mode: dialParams.mode,
+        whitelistHandles: config.whitelistHandles,
+      });
+      const dialID = randomUUID();
+      const requestedAt = new Date().toISOString();
+      outboundCallPending = { ...request, dialID, delivery: "in-flight", requestedAt };
+      const dialPromise = (async (): Promise<FaceTimeDialResult> => {
+        const helperResult = await helper.startCall(request, dialID, requestedAt);
+        const result = resolveFaceTimeDialResult({ dialID, request, helper: helperResult });
+        const callUUID = result.callUUID;
+        if (outboundCallPending?.dialID === dialID) {
+          outboundCallPending.delivery = "accepted";
+          // The helper can emit native identity before its action reply arrives.
+          // A reply without identity must not erase that earlier exact match.
+          if (callUUID) {
+            retainFaceTimeDialCallUUID(outboundCallPending, callUUID);
+          }
+          if (result.proxyIdentifier) {
+            outboundCallPending.proxyIdentifier = result.proxyIdentifier;
+          }
+          scheduleOutboundReconciliation();
+        }
+        // TelephonyUtilities may accept the dial before assigning a UUID. The
+        // later outgoing status event owns correlation in that normal state.
+        return result;
+      })();
+      outboundDialInFlight = dialPromise;
+      try {
+        return await dialPromise;
+      } catch (error) {
+        // A helper-declared rejection means dialing did not begin. Transport
+        // errors are ambiguous, so retain ownership until helper polling
+        // correlates an outgoing event or an operator cancels the request.
+        if (
+          error instanceof FaceTimeHelperActionError ||
+          error instanceof FaceTimeHelperUnavailableError
+        ) {
+          if (outboundCallPending?.dialID === dialID) {
+            clearOutboundCallPending();
+          }
+        } else {
+          if (outboundCallPending?.dialID === dialID) {
+            outboundCallPending.delivery = "ambiguous";
+            if (error instanceof FaceTimeHelperAmbiguousError) {
+              const callUUID = readOutboundCallUUID(error.result);
+              const proxyIdentifier = readOutboundProxyIdentifier(error.result);
+              if (callUUID) {
+                retainFaceTimeDialCallUUID(outboundCallPending, callUUID);
+              }
+              if (proxyIdentifier) {
+                outboundCallPending.proxyIdentifier = proxyIdentifier;
+              }
+            }
+          }
+          if (outboundDialInFlight === dialPromise) {
+            outboundDialInFlight = undefined;
+          }
+          await reconcilePendingOutboundCall();
+          scheduleOutboundReconciliation();
+        }
+        throw error;
+      } finally {
+        if (outboundDialInFlight === dialPromise) {
+          outboundDialInFlight = undefined;
+        }
+      }
+    },
     async hangup(hangupParams) {
       const requestedCallUUID =
         typeof hangupParams?.callUUID === "string" && hangupParams.callUUID.trim()
           ? hangupParams.callUUID.trim()
           : undefined;
-      const call = requestedCallUUID
-        ? calls.get(requestedCallUUID)
+      const findCall = () =>
+        requestedCallUUID
+        ? (calls.get(requestedCallUUID) ??
+          [...calls.values()].find((candidate) =>
+            candidate.callUUIDAliases?.has(requestedCallUUID),
+          ))
         : ([...calls.values()].find((candidate) => candidate.talk) ?? [...calls.values()][0]);
+      let call = findCall();
+      if (!call) {
+        if (
+          !requestedCallUUID ||
+          (outboundCallPending &&
+            doesPendingFaceTimeDialHaveCallUUID(outboundCallPending, requestedCallUUID))
+        ) {
+          const canceled = await cancelPendingOutboundCall();
+          if (canceled) {
+            return {
+              ...(canceled.callUUID ? { callUUID: canceled.callUUID } : {}),
+              dialID: canceled.dialID,
+            };
+          }
+        }
+        // The helper emits active status before acknowledging the dial. Let
+        // that async event handler finish registering the call, then re-read.
+        for (let attempt = 0; attempt < OUTBOUND_RECONCILE_ATTEMPTS && !call; attempt += 1) {
+          call = findCall();
+          if (!call && attempt + 1 < OUTBOUND_RECONCILE_ATTEMPTS) {
+            await new Promise<void>((resolve) =>
+              setTimeout(resolve, OUTBOUND_RECONCILE_INTERVAL_MS),
+            );
+          }
+        }
+      }
       if (!call) {
         throw new Error("no active FaceTime call to hang up");
       }
@@ -703,6 +1117,15 @@ export async function createFaceTimeRuntime(params: {
     async stop() {
       stopping = true;
       let cleanupError: Error | undefined;
+      if (outboundCallPending || outboundDialInFlight) {
+        try {
+          await cancelPendingOutboundCall();
+        } catch (error) {
+          cleanupError ??= new Error(
+            `outbound FaceTime dial cleanup failed: ${formatErrorMessage(error)}`,
+          );
+        }
+      }
       for (const call of [...calls.values()]) {
         const closed = await attemptCarrierHangup(call, "runtime-stop");
         if (!closed) {

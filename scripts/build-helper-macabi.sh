@@ -8,8 +8,19 @@ sdk_root="/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/D
 clang_bin="/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang"
 staged_dir="${HOME}/Library/Containers/com.apple.FaceTime/Data/tmp"
 staged_dylib="${staged_dir}/FaceTimeHelper.dylib"
+auth_dir="${HOME}/Library/Application Support/OpenClaw/FaceTime"
+ipc_key_file="${auth_dir}/helper-ipc-key"
 
-mkdir -p "${build_dir}" "${staged_dir}"
+mkdir -p "${build_dir}" "${staged_dir}" "${auth_dir}"
+if [[ ! -s "${ipc_key_file}" ]]; then
+  umask 077
+  openssl rand -hex 32 > "${ipc_key_file}"
+fi
+ipc_key="$(tr -d '[:space:]' < "${ipc_key_file}")"
+if [[ ! "${ipc_key}" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Invalid FaceTime helper IPC key at ${ipc_key_file}" >&2
+  exit 1
+fi
 
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
   -target arm64e-apple-ios15.0-macabi \
@@ -18,6 +29,7 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
   -fobjc-arc \
   -fmodules \
   -DDEBUG=1 \
+  "-DOPENCLAW_FACETIME_HELPER_TOKEN=\"${ipc_key}\"" \
   -ObjC \
   -I "${helper_dir}/FaceTimeHelper" \
   -I "${helper_dir}/FaceTimeHelper/FaceTime" \

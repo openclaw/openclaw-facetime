@@ -65,10 +65,12 @@ pnpm build
 pnpm build:helper:macabi
 ```
 
-Open FaceTime, then inject the helper from an interactive Terminal:
+Open FaceTime and Phone, then inject the helper into both call apps from an
+interactive Terminal:
 
 ```sh
 pnpm inject:helper
+pnpm inject:helper:phone
 ```
 
 If a non-interactive agent owns the terminal, use:
@@ -77,7 +79,9 @@ If a non-interactive agent owns the terminal, use:
 pnpm inject:helper:terminal
 ```
 
-The helper connects to `127.0.0.1` on `45670 + uid - 501`.
+Each helper connects to `127.0.0.1` on `45670 + uid - 501`. FaceTime owns
+incoming video calls, while Phone owns incoming FaceTime Audio calls on current
+macOS.
 
 ## Configure OpenClaw
 
@@ -132,7 +136,24 @@ Required checks cover:
 
 The call-specific `OpenClaw-Mic` check happens when the actual FaceTime or Phone audio process becomes active.
 
-Place a whitelisted call and inspect status:
+Start an allowlisted outbound audio call from the OpenClaw Mac:
+
+```sh
+openclaw gateway call facetime.dial \
+  --params '{"handle":"user@example.com","mode":"audio"}' \
+  --json
+```
+
+Use `"mode":"video"` for a FaceTime video call. The injected helper creates a
+native dial request with the macOS confirmation UI disabled, so this works when
+the call app's window is off-screen. The target must match `whitelistHandles`,
+and the plugin rejects a second dial while a call or outbound request is active.
+The result includes an immediate `dialID` and uses `state: "pending"` when macOS
+accepts the dial before assigning its call UUID. The helper stamps that ID into
+the native call for exact cancellation and helper-restart recovery, then
+correlates the UUID from the outgoing event.
+
+Alternatively, place a whitelisted call manually and inspect status:
 
 ```sh
 openclaw gateway call facetime.status --json

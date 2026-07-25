@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  doesFaceTimeCallMatchHandle,
   isActiveCall,
   isEndedCall,
   isIncomingRingingCall,
+  isOutgoingRingingCall,
   isWhitelistedFaceTimeCall,
   normalizeFaceTimeCallEvent,
   normalizeFaceTimeHandle,
@@ -14,6 +16,7 @@ describe("FaceTime call events", () => {
       event: "ft-call-status-changed",
       data: {
         call_uuid: "call-1",
+        proxy_identifier: "proxy-1",
         conversation_uuid: "conversation-1",
         conversation_group_uuid: "group-1",
         conversation_audio_enabled: true,
@@ -33,6 +36,7 @@ describe("FaceTime call events", () => {
     });
 
     expect(event?.data.call_uuid).toBe("call-1");
+    expect(event?.data.proxy_identifier).toBe("proxy-1");
     expect(event?.data.conversation_uuid).toBe("conversation-1");
     expect(event?.data.conversation_group_uuid).toBe("group-1");
     expect(event?.data.conversation_audio_enabled).toBe(true);
@@ -105,5 +109,42 @@ describe("FaceTime call events", () => {
     });
 
     expect(isEndedCall(event!)).toBe(true);
+  });
+
+  it("keeps an outbound sending call live while it rings", () => {
+    const event = normalizeFaceTimeCallEvent({
+      event: "ft-call-status-changed",
+      data: {
+        call_uuid: "call-2",
+        call_status: 3,
+        is_outgoing: true,
+        handle: { value: "MAILTO:Owner@example.com" },
+      },
+    });
+
+    expect(isOutgoingRingingCall(event!)).toBe(true);
+    expect(isEndedCall(event!)).toBe(false);
+    expect(doesFaceTimeCallMatchHandle({ event: event!, handle: "owner@example.com" })).toBe(
+      true,
+    );
+    expect(doesFaceTimeCallMatchHandle({ event: event!, handle: "other@example.com" })).toBe(
+      false,
+    );
+  });
+
+  it("keeps a newly accepted status-0 outbound call pending", () => {
+    const event = normalizeFaceTimeCallEvent({
+      event: "ft-call-status-changed",
+      data: {
+        call_uuid: "call-0",
+        call_status: 0,
+        is_outgoing: true,
+        handle: { value: "owner@example.com" },
+      },
+    });
+
+    expect(event).toBeDefined();
+    expect(isOutgoingRingingCall(event!)).toBe(true);
+    expect(isEndedCall(event!)).toBe(false);
   });
 });

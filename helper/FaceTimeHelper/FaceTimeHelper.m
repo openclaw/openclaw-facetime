@@ -1,6 +1,9 @@
 @import AppKit;
 
+#import <float.h>
 #import <Foundation/Foundation.h>
+#import <CommonCrypto/CommonHMAC.h>
+#import <objc/runtime.h>
 
 #import "NetworkController.h"
 #import "Logging.h"
@@ -17,6 +20,223 @@
 #import "CSDConversation.h"
 #import "CSDConversationManager.h"
 #import "TUCall.h"
+
+// Kept local because TelephonyUtilities is private and its headers are not in
+// the macOS SDK. These selectors are checked again at runtime before use.
+@interface TUDialRequest : NSObject
+- (instancetype)initWithURL:(NSURL *)URL;
+@property(nonatomic, getter=isVideo) BOOL video;
+@property(nonatomic) BOOL showUIPrompt;
+@property(nonatomic, readonly, getter=isValid) BOOL valid;
+@property(nonatomic, readonly, copy) NSArray *validityErrors;
+@end
+
+#ifndef OPENCLAW_FACETIME_HELPER_TOKEN
+#error "Build the helper with scripts/build-helper-macabi.sh to configure IPC authentication."
+#endif
+
+static NSString *HelperHMAC(NSString *message) {
+    NSData *key = [[NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_TOKEN] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *payload = [message dataUsingEncoding:NSUTF8StringEncoding];
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, key.bytes, key.length, payload.bytes, payload.length, digest);
+    NSMutableString *hex = [NSMutableString stringWithCapacity:CC_SHA256_DIGEST_LENGTH * 2];
+    for (NSUInteger index = 0; index < CC_SHA256_DIGEST_LENGTH; index++) {
+        [hex appendFormat:@"%02x", digest[index]];
+    }
+    return hex;
+}
+
+static BOOL SecureStringsEqual(NSString *first, NSString *second) {
+    NSData *firstData = [first dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *secondData = [second dataUsingEncoding:NSUTF8StringEncoding];
+    if (firstData.length == 0 || firstData.length != secondData.length) {
+        return NO;
+    }
+    const unsigned char *firstBytes = firstData.bytes;
+    const unsigned char *secondBytes = secondData.bytes;
+    unsigned char difference = 0;
+    for (NSUInteger index = 0; index < firstData.length; index++) {
+        difference |= firstBytes[index] ^ secondBytes[index];
+    }
+    return difference == 0;
+}
+
+static NSString *CanonicalFaceTimeHandle(NSString *value) {
+    if (![value isKindOfClass:[NSString class]]) {
+        return @"";
+    }
+    NSString *canonical = [[value stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]] lowercaseString];
+    for (NSString *prefix in @[@"mailto:", @"tel:", @"facetime-audio:", @"facetime:"]) {
+        if ([canonical hasPrefix:prefix]) {
+            canonical = [canonical substringFromIndex:prefix.length];
+            break;
+        }
+    }
+    if ([canonical containsString:@"@"]) {
+        return canonical;
+    }
+    NSMutableString *phone = [NSMutableString string];
+    NSCharacterSet *allowed = [NSCharacterSet characterSetWithCharactersInString:@"+0123456789"];
+    for (NSUInteger index = 0; index < canonical.length; index++) {
+        unichar character = [canonical characterAtIndex:index];
+        if ([allowed characterIsMember:character]) {
+            [phone appendFormat:@"%C", character];
+        }
+    }
+    return phone;
+}
+
+static NSMutableDictionary<NSString *, TUCall *> *OutboundCallsByDialID;
+static NSMutableSet<NSString *> *CancelledOutboundDialIDs;
+
+static void RestoreOutboundState(void) {
+    TUCallCenter *owner = [TUCallCenter sharedInstance];
+    SEL callsKey = NSSelectorFromString(@"openclaw_facetimeHelper_outboundCallsByDialID");
+    SEL cancelledKey = NSSelectorFromString(@"openclaw_facetimeHelper_cancelledOutboundDialIDs");
+
+    OutboundCallsByDialID = objc_getAssociatedObject(owner, callsKey);
+    if (![OutboundCallsByDialID isKindOfClass:[NSMutableDictionary class]]) {
+        OutboundCallsByDialID = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(owner, callsKey, OutboundCallsByDialID, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    CancelledOutboundDialIDs = objc_getAssociatedObject(owner, cancelledKey);
+    if (![CancelledOutboundDialIDs isKindOfClass:[NSMutableSet class]]) {
+        CancelledOutboundDialIDs = [NSMutableSet set];
+        objc_setAssociatedObject(owner, cancelledKey, CancelledOutboundDialIDs, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+}
+
+static void ArmOutboundCancellation(NSString *dialID) {
+    if (dialID.length == 0) {
+        return;
+    }
+    [CancelledOutboundDialIDs addObject:dialID];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [CancelledOutboundDialIDs removeObject:dialID];
+        [OutboundCallsByDialID removeObjectForKey:dialID];
+    });
+}
+
+static BOOL CallsShareCarrierIdentity(TUCall *first, TUCall *second) {
+    if (first == nil || second == nil) {
+        return NO;
+    }
+    if (first == second) {
+        return YES;
+    }
+    NSString *firstUUID = [first callUUID];
+    NSString *secondUUID = [second callUUID];
+    if (firstUUID.length > 0 && [firstUUID isEqualToString:secondUUID]) {
+        return YES;
+    }
+    // Apple can replace the provisional TUCall object before assigning its
+    // UUID. Its own proxy identity links those objects; it is not our dial ID.
+    NSString *firstProxyID = [first uniqueProxyIdentifier];
+    NSString *secondProxyID = [second uniqueProxyIdentifier];
+    if (firstProxyID.length > 0 && [firstProxyID isEqualToString:secondProxyID]) {
+        return YES;
+    }
+    // TelephonyUtilities links provisional and carrier TUCall objects through
+    // comparativeCall even when it replaces both public identity values.
+    return [first comparativeCall] == second || [second comparativeCall] == first;
+}
+
+static NSArray<TUCall *> *AllKnownCalls(void) {
+    TUCallCenter *callCenter = [TUCallCenter sharedInstance];
+    NSMutableArray<TUCall *> *calls = [NSMutableArray array];
+    NSArray *callLists = @[
+        [callCenter currentCalls] ?: @[],
+        [callCenter currentAudioAndVideoCalls] ?: @[],
+        [callCenter displayedCalls] ?: @[],
+        [callCenter displayedAudioAndVideoCalls] ?: @[],
+        [callCenter incomingCalls] ?: @[],
+    ];
+    for (NSArray *callList in callLists) {
+        for (TUCall *call in callList) {
+            if (![calls containsObject:call]) {
+                [calls addObject:call];
+            }
+        }
+    }
+    for (id candidate in @[[callCenter incomingCall] ?: [NSNull null], [callCenter incomingVideoCall] ?: [NSNull null]]) {
+        if (candidate != [NSNull null] && ![calls containsObject:candidate]) {
+            [calls addObject:candidate];
+        }
+    }
+    return calls;
+}
+
+static TUCall *UniqueOutboundCallForRequest(NSString *handle, NSString *requestedAt, NSString *mode) {
+    if (handle.length == 0 || requestedAt.length == 0 ||
+        !([mode isEqualToString:@"audio"] || [mode isEqualToString:@"video"])) {
+        return nil;
+    }
+    NSISO8601DateFormatter *formatter = [[NSISO8601DateFormatter alloc] init];
+    formatter.formatOptions = NSISO8601DateFormatWithInternetDateTime | NSISO8601DateFormatWithFractionalSeconds;
+    NSDate *requestDate = [formatter dateFromString:requestedAt];
+    if (requestDate == nil) {
+        return nil;
+    }
+    NSString *canonicalHandle = CanonicalFaceTimeHandle(handle);
+    BOOL expectedVideo = [mode isEqualToString:@"video"];
+    TUCall *match = nil;
+    for (TUCall *call in AllKnownCalls()) {
+        NSDate *callDate = [call dateCreated] ?: [call dateAnsweredOrDialed];
+        NSTimeInterval age = callDate != nil ? [callDate timeIntervalSinceDate:requestDate] : DBL_MAX;
+        NSString *callHandle = CanonicalFaceTimeHandle([[call handle] value]);
+        if (![call isOutgoing] || [call isVideo] != expectedVideo ||
+            ![callHandle isEqualToString:canonicalHandle] || age < -1 || age > 15) {
+            continue;
+        }
+        if (match != nil) {
+            return nil;
+        }
+        match = call;
+    }
+    return match;
+}
+
+static NSString *RetainedDialIDForOutboundCall(TUCall *call) {
+    for (NSString *dialID in OutboundCallsByDialID) {
+        TUCall *retainedCall = OutboundCallsByDialID[dialID];
+        if (CallsShareCarrierIdentity(retainedCall, call)) {
+            return dialID;
+        }
+    }
+    return nil;
+}
+
+static TUCall *LiveOutboundCall(NSString *dialID, NSString *expectedCallUUID, NSString *expectedProxyIdentifier) {
+    TUCall *retainedCall = dialID.length > 0 ? OutboundCallsByDialID[dialID] : nil;
+    for (TUCall *call in AllKnownCalls()) {
+        BOOL matchesRetainedCall = CallsShareCarrierIdentity(retainedCall, call);
+        BOOL matchesExpectedUUID = expectedCallUUID.length > 0 && [[call callUUID] isEqualToString:expectedCallUUID];
+        BOOL matchesExpectedProxyIdentifier = expectedProxyIdentifier.length > 0 &&
+            [[call uniqueProxyIdentifier] isEqualToString:expectedProxyIdentifier];
+        if ([call isOutgoing] && (matchesRetainedCall || matchesExpectedUUID || matchesExpectedProxyIdentifier)) {
+            if (dialID.length > 0) {
+                OutboundCallsByDialID[dialID] = call;
+            }
+            return call;
+        }
+    }
+    return nil;
+}
+
+static void ReleaseRetainedOutboundCall(TUCall *call) {
+    if (call == nil) {
+        return;
+    }
+    for (NSString *dialID in [OutboundCallsByDialID allKeys]) {
+        TUCall *retainedCall = OutboundCallsByDialID[dialID];
+        if (CallsShareCarrierIdentity(retainedCall, call)) {
+            if (![CancelledOutboundDialIDs containsObject:dialID]) {
+                [OutboundCallsByDialID removeObjectForKey:dialID];
+            }
+        }
+    }
+}
 
 @interface FACETIMEHELPER : NSObject
 + (instancetype)sharedInstance;
@@ -68,6 +288,9 @@ FACETIMEHELPER *plugin;
 + (void)load {
     // Create the singleton
     plugin = [FACETIMEHELPER sharedInstance];
+    // Store ownership on a host object whose lifetime spans helper reinjection.
+    // Static dictionaries alone would orphan provisional outbound calls.
+    RestoreOutboundState();
 
     // Get OS version for debugging purposes
     NSUInteger major = [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
@@ -75,11 +298,14 @@ FACETIMEHELPER *plugin;
     DLog("FACETIMEHELPER: %{public}@ loaded into %{public}@ on macOS %ld.%ld", [self className], [[NSBundle mainBundle] bundleIdentifier], (long)major, (long)minor);
 
     NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier];
-    if ([bundleIdentifier isEqualToString:@"com.apple.FaceTime"] || [bundleIdentifier isEqualToString:@"com.apple.FaceTime.FTConversationService"] || [bundleIdentifier isEqualToString:@"com.apple.TelephonyUtilities"]) {
+    if ([bundleIdentifier isEqualToString:@"com.apple.FaceTime"] ||
+        [bundleIdentifier isEqualToString:@"com.apple.FaceTime.FTConversationService"] ||
+        [bundleIdentifier isEqualToString:@"com.apple.mobilephone"] ||
+        [bundleIdentifier isEqualToString:@"com.apple.TelephonyUtilities"]) {
         DLog("FACETIMEHELPER: Initializing Connection...");
         [plugin initializeNetworkController];
     } else {
-        DLog("FACETIMEHELPER: Injected into non-FaceTime process %@, aborting.", bundleIdentifier);
+        DLog("FACETIMEHELPER: Injected into unsupported call process %@, aborting.", bundleIdentifier);
         return;
     }
 }
@@ -133,11 +359,20 @@ FACETIMEHELPER *plugin;
     if (call == nil || ![call respondsToSelector:@selector(callUUID)] || ![call respondsToSelector:@selector(callStatus)]) {
         return;
     }
+    NSString *dialID = RetainedDialIDForOutboundCall(call);
+    if (dialID.length > 0 && [CancelledOutboundDialIDs containsObject:dialID]) {
+        // A cancellation can arrive before TelephonyUtilities publishes the
+        // call. Suppress that late carrier object before the bridge sees it.
+        [[TUCallCenter sharedInstance] disconnectCall:call];
+        ReleaseRetainedOutboundCall(call);
+        return;
+    }
     TUConversation *conversation = [[TUCallCenter sharedInstance] activeConversationForCall:call];
-    NSDictionary *data = @{
+    NSMutableDictionary *data = [@{
         @"audio_mode": [call audioMode] ?: [NSNull null],
         @"call_status": [NSNumber numberWithInt:[call callStatus]] ?: [NSNull null],
         @"call_uuid": [call callUUID] ?: [NSNull null],
+        @"proxy_identifier": [call uniqueProxyIdentifier] ?: [NSNull null],
         @"conversation_uuid": [[conversation UUID] UUIDString] ?: [NSNull null],
         @"conversation_group_uuid": [[conversation groupUUID] UUIDString] ?: [NSNull null],
         @"conversation_audio_enabled": [NSNumber numberWithBool:[conversation isAudioEnabled]] ?: [NSNull null],
@@ -145,6 +380,8 @@ FACETIMEHELPER *plugin;
         @"conversation_av_mode": [NSNumber numberWithUnsignedInteger:[conversation avMode]] ?: [NSNull null],
         @"conversation_resolved_audio_video_mode": [NSNumber numberWithUnsignedInteger:[conversation resolvedAudioVideoMode]] ?: [NSNull null],
         @"is_conversation": [NSNumber numberWithBool:[call isConversation]] ?: [NSNull null],
+        @"is_endpoint_on_current_device": [NSNumber numberWithBool:[call isEndpointOnCurrentDevice]] ?: [NSNull null],
+        @"is_hosted_on_current_device": [NSNumber numberWithBool:[call isHostedOnCurrentDevice]] ?: [NSNull null],
         @"disconnected_reason": [NSNumber numberWithInt:[call disconnectedReason]] ?: [NSNull null],
         @"ended_error": [call endedErrorString] ?: [NSNull null],
         @"ended_reason": [call endedReasonString] ?: [NSNull null],
@@ -156,7 +393,10 @@ FACETIMEHELPER *plugin;
         @"is_outgoing": [NSNumber numberWithBool:[call isOutgoing]] ?: [NSNull null],
         @"local_meter_level": [NSNumber numberWithFloat:[call localMeterLevel]] ?: [NSNull null],
         @"remote_meter_level": [NSNumber numberWithFloat:[call remoteMeterLevel]] ?: [NSNull null],
-    };
+    } mutableCopy];
+    if (dialID.length > 0) {
+        data[@"dial_id"] = dialID;
+    }
     NSDictionary *message = @{@"event": @"ft-call-status-changed", @"data": data};
     [[NetworkController sharedInstance] sendMessage: message];
 }
@@ -262,6 +502,9 @@ FACETIMEHELPER *plugin;
     NSMutableDictionary *callsByUUID = [NSMutableDictionary dictionary];
     NSArray *callLists = @[
         [callCenter currentCalls] ?: @[],
+        [callCenter currentAudioAndVideoCalls] ?: @[],
+        [callCenter displayedCalls] ?: @[],
+        [callCenter displayedAudioAndVideoCalls] ?: @[],
         [callCenter incomingCalls] ?: @[],
     ];
     for (NSArray *callList in callLists) {
@@ -288,7 +531,16 @@ FACETIMEHELPER *plugin;
 }
 
 -(void) callStatusChanged: (NSNotification *)notification {
-    [self emitCallStatus:[notification object]];
+    TUCall *call = [notification object];
+    NSString *dialID = RetainedDialIDForOutboundCall(call);
+    [self emitCallStatus:call];
+    int status = [call callStatus];
+    if (status != 0 && status != 1 && status != 3 && status != 4) {
+        ReleaseRetainedOutboundCall(call);
+        if (dialID.length > 0) {
+            [CancelledOutboundDialIDs removeObject:dialID];
+        }
+    }
 }
 
 // Run when receiving a new message from the tcp socket
@@ -304,6 +556,28 @@ FACETIMEHELPER *plugin;
     NSData *jsonData = [message dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *dictionary = [NSJSONSerialization JSONObjectWithData:jsonData options:kNilOptions error:&error];
 
+    NSString *controlEvent = [dictionary[@"event"] isKindOfClass:[NSString class]]
+        ? dictionary[@"event"]
+        : @"";
+    if ([controlEvent isEqualToString:@"auth-challenge"]) {
+        NSString *nonce = [dictionary[@"nonce"] isKindOfClass:[NSString class]]
+            ? dictionary[@"nonce"]
+            : @"";
+        NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
+        if (nonce.length > 0) {
+            NSString *proof = HelperHMAC(
+                [NSString stringWithFormat:@"helper\n%@\n%@", bundleIdentifier, nonce]
+            );
+            [controller sendMessage: @{
+                @"event": @"auth-response",
+                @"bundle_identifier": bundleIdentifier,
+                @"nonce": nonce,
+                @"auth": proof,
+            }];
+        }
+        return;
+    }
+
     // Event is the type of packet that was sent
     NSString *event = dictionary[@"action"];
     // Data is the actual information that we need in the packet
@@ -312,6 +586,42 @@ FACETIMEHELPER *plugin;
     NSString *transaction = nil;
     if ([dictionary objectForKey:(@"transactionId")] != [NSNull null]) {
         transaction = dictionary[@"transactionId"];
+    }
+
+    if (event.length > 0) {
+        NSString *nonce = [dictionary[@"auth_nonce"] isKindOfClass:[NSString class]]
+            ? dictionary[@"auth_nonce"]
+            : @"";
+        NSString *dataJSON = [dictionary[@"data_json"] isKindOfClass:[NSString class]]
+            ? dictionary[@"data_json"]
+            : @"";
+        NSString *receivedAuth = [dictionary[@"auth"] isKindOfClass:[NSString class]]
+            ? dictionary[@"auth"]
+            : @"";
+        NSString *signedPayload = [NSString stringWithFormat:@"action\n%@\n%@\n%@\n%@",
+            event ?: @"", transaction ?: @"", nonce, dataJSON];
+        if (nonce.length == 0 || dataJSON.length == 0 ||
+            !SecureStringsEqual(receivedAuth, HelperHMAC(signedPayload))) {
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": @"Unauthenticated FaceTime helper action",
+                }];
+            }
+            return;
+        }
+        NSData *actionData = [dataJSON dataUsingEncoding:NSUTF8StringEncoding];
+        id decodedData = [NSJSONSerialization JSONObjectWithData:actionData options:0 error:&error];
+        if (![decodedData isKindOfClass:[NSDictionary class]]) {
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": @"Invalid authenticated FaceTime helper action",
+                }];
+            }
+            return;
+        }
+        data = decodedData;
     }
 
     DLog("FACETIMEHELPER: Message received: %{public}@, %{public}@", event, data);
@@ -347,14 +657,17 @@ FACETIMEHELPER *plugin;
     } else if ([event isEqualToString:@"leave-call"]) {
         TUCall *call = [[TUCallCenter sharedInstance] callWithCallUUID:(data[@"callUUID"])];
         
-        if ([call callStatus] != 1) {
+        if (call == nil) {
             if (transaction != nil) {
-                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Call is not waiting to be left!"}];
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Call not found!"}];
             }
             return;
         }
         
+        // Outbound dialing can still be ringing when shutdown needs to cancel it.
+        // TUCallCenter owns disconnection for every live call status.
         [[TUCallCenter sharedInstance] disconnectCall:call];
+        ReleaseRetainedOutboundCall(call);
         if (transaction != nil) {
             [controller sendMessage: @{@"transactionId": transaction}];
         }
@@ -536,7 +849,219 @@ FACETIMEHELPER *plugin;
             }
         }
     } else if ([event isEqualToString:@"start-call"]) {
-        
+        NSString *handle = [data[@"handle"] isKindOfClass:[NSString class]] ? data[@"handle"] : nil;
+        NSString *mode = [data[@"mode"] isKindOfClass:[NSString class]] ? data[@"mode"] : nil;
+        NSString *dialID = [data[@"dialID"] isKindOfClass:[NSString class]] ? data[@"dialID"] : nil;
+        if (handle.length == 0 || dialID.length == 0 || !([mode isEqualToString:@"audio"] || [mode isEqualToString:@"video"])) {
+            if (transaction != nil) {
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Valid handle, mode, and dial ID are required"}];
+            }
+            return;
+        }
+
+        TUCallCenter *callCenter = [TUCallCenter sharedInstance];
+        if ([[callCenter currentCalls] count] > 0) {
+            if (transaction != nil) {
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Another call is already active"}];
+            }
+            return;
+        }
+
+        NSString *escapedHandle = [handle stringByAddingPercentEncodingWithAllowedCharacters:[NSCharacterSet URLPathAllowedCharacterSet]];
+        NSString *scheme = [mode isEqualToString:@"video"] ? @"facetime" : @"facetime-audio";
+        NSURL *URL = [NSURL URLWithString:[NSString stringWithFormat:@"%@://%@", scheme, escapedHandle]];
+        Class dialRequestClass = NSClassFromString(@"TUDialRequest");
+        if (URL == nil || dialRequestClass == Nil || ![dialRequestClass instancesRespondToSelector:@selector(initWithURL:)]) {
+            if (transaction != nil) {
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"TUDialRequest is unavailable"}];
+            }
+            return;
+        }
+
+        TUDialRequest *request = nil;
+        @try {
+            request = [[dialRequestClass alloc] initWithURL:URL];
+            request.video = [mode isEqualToString:@"video"];
+            request.showUIPrompt = NO;
+            if ([request respondsToSelector:@selector(isValid)] && !request.valid) {
+                NSString *reason = request.validityErrors.count > 0
+                    ? [request.validityErrors componentsJoinedByString:@"; "]
+                    : @"Dial request is invalid";
+                if (transaction != nil) {
+                    [controller sendMessage: @{@"transactionId": transaction, @"error": reason}];
+                }
+                return;
+            }
+            if (![callCenter respondsToSelector:@selector(dialWithRequest:)] ||
+                ([callCenter respondsToSelector:@selector(canDialWithRequest:)] && ![callCenter canDialWithRequest:request])) {
+                if (transaction != nil) {
+                    [controller sendMessage: @{@"transactionId": transaction, @"error": @"FaceTime cannot dial this request"}];
+                }
+                return;
+            }
+        } @catch (NSException *exception) {
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": exception.reason ?: @"FaceTime dial failed",
+                }];
+            }
+            return;
+        }
+
+        TUCall *call = nil;
+        NSString *canonicalHandle = CanonicalFaceTimeHandle(handle);
+        @try {
+            call = [callCenter dialWithRequest:request];
+        } @catch (NSException *exception) {
+            // dialWithRequest can throw after CallServices has already created
+            // the only outgoing call. Preserve Apple's carrier identity so the
+            // gateway can reconcile or cancel that ambiguous result exactly.
+            TUCall *ambiguousCall = nil;
+            for (TUCall *candidate in AllKnownCalls()) {
+                NSString *candidateHandle = CanonicalFaceTimeHandle([[candidate handle] value]);
+                if ([candidate isOutgoing] && [candidateHandle isEqualToString:canonicalHandle]) {
+                    if (ambiguousCall != nil) {
+                        ambiguousCall = nil;
+                        break;
+                    }
+                    ambiguousCall = candidate;
+                }
+            }
+            if (ambiguousCall != nil) {
+                OutboundCallsByDialID[dialID] = ambiguousCall;
+            }
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": exception.reason ?: @"FaceTime dial outcome is unknown",
+                    @"ambiguous": @YES,
+                    @"call_uuid": [ambiguousCall callUUID] ?: [NSNull null],
+                    @"proxy_identifier": [ambiguousCall uniqueProxyIdentifier] ?: [NSNull null],
+                }];
+            }
+            return;
+        }
+        if (call == nil) {
+            if (transaction != nil) {
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"FaceTime did not create an outbound call"}];
+            }
+            return;
+        }
+        OutboundCallsByDialID[dialID] = call;
+
+        // Publish Apple's identity before the delayed acceptance check. The
+        // gateway retains it across helper reinjection without overwriting the
+        // reserved uniqueProxyIdentifier on TUDialRequest.
+        [controller sendMessage: @{
+            @"event": @"ft-outbound-call-identified",
+            @"data": @{
+                @"dial_id": dialID,
+                @"call_uuid": [call callUUID] ?: [NSNull null],
+                @"proxy_identifier": [call uniqueProxyIdentifier] ?: [NSNull null],
+            },
+        }];
+
+        // CSD can discard the provisional call after dialWithRequest returns.
+        // Let its state machine run before claiming that the dial was accepted.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            TUCall *stableCall = LiveOutboundCall(dialID, nil, nil);
+            if (stableCall == nil) {
+                if (transaction != nil) {
+                    [controller sendMessage: @{
+                        @"transactionId": transaction,
+                        @"error": @"FaceTime ended the outbound call before it could ring",
+                        @"ambiguous": @YES,
+                    }];
+                }
+                return;
+            }
+            @try {
+                [self emitCallStatus:stableCall];
+                if (transaction != nil) {
+                    [controller sendMessage: @{
+                        @"transactionId": transaction,
+                        @"dial_id": dialID,
+                        @"call_uuid": [stableCall callUUID] ?: [NSNull null],
+                        @"proxy_identifier": [stableCall uniqueProxyIdentifier] ?: [NSNull null],
+                        @"handle": handle,
+                        @"mode": mode,
+                    }];
+                }
+            } @catch (NSException *exception) {
+                DLog("FACETIMEHELPER: outbound acknowledgement failed: %{public}@", exception.reason);
+            }
+        });
+    } else if ([event isEqualToString:@"find-outgoing-call"]) {
+        NSString *expectedHandle = [data[@"handle"] isKindOfClass:[NSString class]] ? data[@"handle"] : @"";
+        NSString *requestedAt = [data[@"requestedAt"] isKindOfClass:[NSString class]] ? data[@"requestedAt"] : @"";
+        NSString *mode = [data[@"mode"] isKindOfClass:[NSString class]] ? data[@"mode"] : @"";
+        NSString *dialID = [data[@"dialID"] isKindOfClass:[NSString class]] ? data[@"dialID"] : @"";
+        NSString *expectedCallUUID = [data[@"callUUID"] isKindOfClass:[NSString class]]
+            ? [data[@"callUUID"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+            : @"";
+        NSString *expectedProxyIdentifier = [data[@"proxyIdentifier"] isKindOfClass:[NSString class]]
+            ? [data[@"proxyIdentifier"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+            : @"";
+        BOOL retainedDial = dialID.length > 0 && OutboundCallsByDialID[dialID] != nil;
+        TUCall *matchedCall = LiveOutboundCall(dialID, expectedCallUUID, expectedProxyIdentifier);
+        if (matchedCall == nil && !retainedDial) {
+            matchedCall = UniqueOutboundCallForRequest(expectedHandle, requestedAt, mode);
+            if (matchedCall != nil && dialID.length > 0) {
+                OutboundCallsByDialID[dialID] = matchedCall;
+            }
+        }
+        if (transaction != nil) {
+            [controller sendMessage: @{
+                @"transactionId": transaction,
+                @"found": [NSNumber numberWithBool:matchedCall != nil],
+                @"retained_outbound_dial": [NSNumber numberWithBool:retainedDial],
+                @"call_uuid": [matchedCall callUUID] ?: [NSNull null],
+                @"proxy_identifier": [matchedCall uniqueProxyIdentifier] ?: [NSNull null],
+            }];
+        }
+    } else if ([event isEqualToString:@"cancel-outgoing-call"]) {
+        NSString *expectedHandle = [data[@"handle"] isKindOfClass:[NSString class]] ? data[@"handle"] : @"";
+        NSString *requestedAt = [data[@"requestedAt"] isKindOfClass:[NSString class]] ? data[@"requestedAt"] : @"";
+        NSString *mode = [data[@"mode"] isKindOfClass:[NSString class]] ? data[@"mode"] : @"";
+        NSString *dialID = [data[@"dialID"] isKindOfClass:[NSString class]] ? data[@"dialID"] : @"";
+        NSString *expectedCallUUID = [data[@"callUUID"] isKindOfClass:[NSString class]]
+            ? [data[@"callUUID"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+            : @"";
+        NSString *expectedProxyIdentifier = [data[@"proxyIdentifier"] isKindOfClass:[NSString class]]
+            ? [data[@"proxyIdentifier"] stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]]
+            : @"";
+        BOOL retainedDial = dialID.length > 0 && OutboundCallsByDialID[dialID] != nil;
+        if (retainedDial) {
+            // Arm first so LiveOutboundCall keeps the helper-owned mapping if
+            // CallServices has not published the corresponding call yet.
+            ArmOutboundCancellation(dialID);
+        }
+        TUCall *matchedCall = LiveOutboundCall(dialID, expectedCallUUID, expectedProxyIdentifier);
+        if (matchedCall == nil && !retainedDial) {
+            matchedCall = UniqueOutboundCallForRequest(expectedHandle, requestedAt, mode);
+            if (matchedCall != nil && dialID.length > 0) {
+                OutboundCallsByDialID[dialID] = matchedCall;
+            }
+        }
+        if (matchedCall != nil) {
+            if (!retainedDial && dialID.length > 0) {
+                ArmOutboundCancellation(dialID);
+            }
+            [[TUCallCenter sharedInstance] disconnectCall:matchedCall];
+        }
+        BOOL tombstoned = retainedDial && matchedCall == nil;
+        BOOL cancelled = matchedCall != nil || tombstoned;
+        if (transaction != nil) {
+            [controller sendMessage: @{
+                @"transactionId": transaction,
+                @"found": [NSNumber numberWithBool:matchedCall != nil],
+                @"cancelled": [NSNumber numberWithBool:cancelled],
+                @"tombstoned": [NSNumber numberWithBool:tombstoned],
+                @"call_uuid": [matchedCall callUUID] ?: [NSNull null],
+                @"proxy_identifier": [matchedCall uniqueProxyIdentifier] ?: [NSNull null],
+            }];
+        }
     }
 }
 
