@@ -8,16 +8,12 @@
 
 #ifndef NetworkController_h
 #define NetworkController_h
-#import "GCDAsyncSocket.h"
+#import <Foundation/Foundation.h>
 
 // Block typedefs
-@class GCDAsyncSocket;
 typedef void (^MessageBlock)(id,NSString*);
 
-@interface NetworkController : NSObject<GCDAsyncSocketDelegate> {
-    GCDAsyncSocket *asyncSocket;
-    MessageBlock messageReceivedBlock;
-}
+@interface NetworkController : NSObject<NSStreamDelegate>
 
 // Singleton instance
 + (NetworkController*)sharedInstance;

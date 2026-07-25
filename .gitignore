@@ -4,7 +4,6 @@ dist/
 WORKLOG.md
 helper-ipc-key
 
-helper/Pods/
 helper/*.xcworkspace/xcuserdata/
 helper/FaceTimeHelper.xcodeproj/xcuserdata/
 *.xcuserstate

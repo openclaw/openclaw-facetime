@@ -18,7 +18,6 @@ This avoids the duplex BlackHole route that current FaceTime Voice Processing su
 - macOS 14.4 or later
 - FaceTime signed in
 - Xcode
-- CocoaPods for the injected helper
 - SoX
 - an OpenAI Platform API key with Realtime access configured in OpenClaw
 - consent from everyone on the call before capturing or processing audio
@@ -26,7 +25,7 @@ This avoids the duplex BlackHole route that current FaceTime Voice Processing su
 Install local dependencies:
 
 ```sh
-brew install cocoapods sox
+brew install sox
 pnpm install
 ```
 
@@ -40,15 +39,25 @@ pnpm build:capture
 
 OpenClaw installs npm plugins with lifecycle scripts disabled. On first plugin activation, the plugin checks for this helper and builds it from the packaged Swift source when missing. Xcode must therefore remain installed on the Lobster Mac. The explicit command above is useful for setup verification and development.
 
-Build the pinned BlackHole v0.7.1 source as the paired OpenClaw driver, then install it:
+Install the pinned BlackHole v0.7.1 source as the paired OpenClaw driver:
 
 ```sh
-pnpm build:driver
-pnpm install:driver
+openclaw gateway call facetime.installDriver --json
 system_profiler SPAudioDataType | grep -E 'OpenClaw-(Mic|Feed)'
 ```
 
-Driver installation prompts for the administrator password, restarts Core Audio, and disconnects active calls.
+This idempotent setup action builds the driver locally when needed, presents the
+normal macOS administrator prompt, verifies the installed bundle, and restarts
+Core Audio only when the installed recipe is missing or stale. The plugin
+rejects the action during an active or pending managed call. You can inspect it
+without changing the system:
+
+```sh
+openclaw gateway call facetime.driverStatus --json
+```
+
+For development, `pnpm build:driver` and `pnpm install:driver` invoke the same
+build and installation path.
 
 The first process-tap check prompts for Screen & System Audio Recording permission. Grant it to the app that runs OpenClaw, quit that app completely, reopen it, and rerun preflight.
 
@@ -58,17 +67,34 @@ The generated `OpenClawBridge.driver` is a separate modified build of GPL-3.0 Bl
 
 Do not commit or silently distribute the generated driver. Distribution requires compliance with BlackHole's GPL-3.0 terms, a separate license from Existential Audio, or a replacement driver with a compatible license.
 
-## Build the plugin and helper
+## Build the plugin
 
 ```sh
 pnpm build
-pnpm build:helper:macabi
 ```
 
-Open FaceTime and Phone, then inject the helper into both call apps from an
-interactive Terminal:
+The persistent OpenClaw gateway now owns helper preparation and injection. On
+startup it builds the signed helper from packaged source when missing or stale,
+opens FaceTime and Phone in the background if needed, injects each process, and
+retries with bounded backoff whenever an authenticated helper disconnects.
+There is no separate LaunchAgent and no CocoaPods dependency, so plugin updates
+and removal cannot leave a stale helper service behind.
+
+Enable Developer Tools mode once from an interactive Terminal before the first
+automatic injection:
 
 ```sh
+sudo /usr/sbin/DevToolsSecurity -enable
+```
+
+macOS can also request permission for the OpenClaw host to control developer
+tools the first time LLDB attaches. Grant that prompt once.
+
+Manual build and injection commands remain available for development or
+recovery:
+
+```sh
+pnpm build:helper:macabi
 pnpm inject:helper
 pnpm inject:helper:phone
 ```
@@ -79,7 +105,8 @@ If a non-interactive agent owns the terminal, use:
 pnpm inject:helper:terminal
 ```
 
-Each helper connects to `127.0.0.1` on `45670 + uid - 501`. FaceTime owns
+Each helper connects to `127.0.0.1` on `45670 + uid - 501`. The connection is
+authenticated with a locally generated key. FaceTime owns
 incoming video calls, while Phone owns incoming FaceTime Audio calls on current
 macOS.
 
@@ -116,7 +143,7 @@ If carrier hangup fails, the helper safety-mutes both directions, retains the pr
 
 ## Preflight and live test
 
-Start the OpenClaw gateway with the plugin enabled, inject the helper, then run:
+Start the OpenClaw gateway with the plugin enabled, then run:
 
 ```sh
 openclaw gateway call facetime.preflight --json
@@ -191,7 +218,10 @@ pnpm build:capture
 npm pack --dry-run
 ```
 
-Generated `dist/`, `native/.build/`, and `native-driver/.build/` outputs are ignored. The npm package includes the TypeScript build, native capture source, helper source, and setup scripts, but excludes generated native binaries and drivers.
+Generated `dist/` and `native/.build/` outputs are ignored. Helper and driver
+artifacts are built into user cache or application-support directories. The npm
+package includes the TypeScript build, native capture source, helper source, and
+setup scripts, but excludes generated native binaries and GPL driver artifacts.
 
 ## Current limits
 

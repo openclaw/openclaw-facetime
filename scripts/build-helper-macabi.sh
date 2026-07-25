@@ -10,6 +10,15 @@ staged_dir="${HOME}/Library/Containers/com.apple.FaceTime/Data/tmp"
 staged_dylib="${staged_dir}/FaceTimeHelper.dylib"
 auth_dir="${HOME}/Library/Application Support/OpenClaw/FaceTime"
 ipc_key_file="${auth_dir}/helper-ipc-key"
+build_stamp_file="${auth_dir}/helper-build.sha256"
+if_needed=false
+
+if [[ "${1:-}" == "--if-needed" ]]; then
+  if_needed=true
+elif [[ $# -gt 0 ]]; then
+  echo "Usage: $0 [--if-needed]" >&2
+  exit 2
+fi
 
 mkdir -p "${build_dir}" "${staged_dir}" "${auth_dir}"
 if [[ ! -s "${ipc_key_file}" ]]; then
@@ -22,6 +31,25 @@ if [[ ! "${ipc_key}" =~ ^[0-9a-f]{64}$ ]]; then
   exit 1
 fi
 
+source_hash="$(
+  {
+    find "${helper_dir}/FaceTimeHelper" -type f -print | LC_ALL=C sort | while IFS= read -r source_file; do
+      shasum -a 256 "${source_file}"
+    done
+    shasum -a 256 "${BASH_SOURCE[0]}"
+    printf '%s' "${ipc_key}" | shasum -a 256
+  } | shasum -a 256 | awk '{print $1}'
+)"
+
+if [[ "${if_needed}" == true &&
+      -f "${staged_dylib}" &&
+      -f "${build_stamp_file}" &&
+      "$(tr -d '[:space:]' < "${build_stamp_file}")" == "${source_hash}" ]] &&
+    codesign --verify --strict "${staged_dylib}" >/dev/null 2>&1; then
+  echo "${staged_dylib}"
+  exit 0
+fi
+
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
   -target arm64e-apple-ios15.0-macabi \
   -dynamiclib \
@@ -30,17 +58,16 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
   -fmodules \
   -DDEBUG=1 \
   "-DOPENCLAW_FACETIME_HELPER_TOKEN=\"${ipc_key}\"" \
+  "-DOPENCLAW_FACETIME_HELPER_BUILD_ID=\"${source_hash}\"" \
   -ObjC \
   -I "${helper_dir}/FaceTimeHelper" \
   -I "${helper_dir}/FaceTimeHelper/FaceTime" \
   -I "${helper_dir}/FaceTimeHelper/ZKSwizzle" \
-  -I "${helper_dir}/Pods/CocoaAsyncSocket/Source/GCD" \
   -iframework /System/Library/PrivateFrameworks \
   "${helper_dir}/FaceTimeHelper/FaceTimeHelper.m" \
   "${helper_dir}/FaceTimeHelper/NetworkController.m" \
   "${helper_dir}/FaceTimeHelper/CTBlockDescription.m" \
   "${helper_dir}/FaceTimeHelper/ZKSwizzle/ZKSwizzle.m" \
-  "${helper_dir}/Pods/CocoaAsyncSocket/Source/GCD/GCDAsyncSocket.m" \
   -framework Foundation \
   -framework CoreServices \
   -framework Security \
@@ -51,5 +78,6 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
 codesign --force --sign - "${build_dir}/FaceTimeHelper.dylib"
 cp "${build_dir}/FaceTimeHelper.dylib" "${staged_dylib}"
 codesign --force --sign - "${staged_dylib}"
+printf '%s\n' "${source_hash}" > "${build_stamp_file}"
 
 echo "${staged_dylib}"

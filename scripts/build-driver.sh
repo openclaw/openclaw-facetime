@@ -12,7 +12,7 @@ work_dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/openclaw-driver.XXXXXX")
 archive="$work_dir/BlackHole.tar.gz"
 source_dir="$work_dir/BlackHole-$version"
 build_dir="$work_dir/build"
-output_dir="$here/native-driver/.build"
+output_dir="${HOME}/Library/Caches/OpenClaw/FaceTime/driver"
 output_driver="$output_dir/OpenClawBridge.driver"
 
 remove_tree() {
@@ -57,6 +57,13 @@ plist="$source_dir/BlackHole/BlackHole.plist"
   PRODUCT_BUNDLE_IDENTIFIER=ai.openclaw.BlackHoleBridge \
   'GCC_PREPROCESSOR_DEFINITIONS=$GCC_PREPROCESSOR_DEFINITIONS kNumber_Of_Channels=2 kPlugIn_BundleID=\"ai.openclaw.BlackHoleBridge\" kDriver_Name=\"OpenClawBridge\" kHas_Driver_Name_Format=false kDevice_Name=\"OpenClaw-Mic\" kDevice2_Name=\"OpenClaw-Feed\" kDevice_IsHidden=false kDevice2_IsHidden=false kDevice_HasInput=true kDevice_HasOutput=false kDevice2_HasInput=false kDevice2_HasOutput=true'
 
+/usr/bin/codesign --force --deep --sign - "$build_dir/BlackHole.driver"
+/usr/libexec/PlistBuddy \
+  -c "Add :OpenClawDriverRecipe string facetime-paired-v1" \
+  "$build_dir/BlackHole.driver/Contents/Info.plist"
+/usr/libexec/PlistBuddy \
+  -c "Add :OpenClawBlackHoleVersion string $version" \
+  "$build_dir/BlackHole.driver/Contents/Info.plist"
 /usr/bin/codesign --force --deep --sign - "$build_dir/BlackHole.driver"
 /usr/bin/codesign --verify --strict "$build_dir/BlackHole.driver"
 /bin/mkdir -p "$output_dir"

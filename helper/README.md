@@ -9,3 +9,8 @@ localhost:45670 + uid - 501
 ```
 
 It emits `ft-call-status-changed` events and accepts existing actions such as `answer-call` and `leave-call`.
+
+The network client uses Foundation streams and has no third-party build
+dependencies. The OpenClaw gateway builds this helper from source and supervises
+injection into both FaceTime and Phone. `scripts/build-helper-macabi.sh` and
+`scripts/inject-helper.sh` remain the canonical manual development commands.

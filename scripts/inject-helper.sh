@@ -5,6 +5,15 @@ derived_root="${HOME}/Library/Developer/Xcode/DerivedData"
 staged_macabi="${HOME}/Library/Containers/com.apple.FaceTime/Data/tmp/FaceTimeHelper.dylib"
 target_app="${FACETIME_HELPER_APP:-FaceTime}"
 
+if [[ "${1:-}" == "--app" ]]; then
+  target_app="${2:-}"
+  shift 2
+fi
+if [[ $# -gt 0 ]]; then
+  echo "Usage: $0 [--app FaceTime|Phone]" >&2
+  exit 2
+fi
+
 case "${target_app}" in
   FaceTime)
     target_bundle="com.apple.FaceTime"
@@ -70,7 +79,7 @@ if [[ -z "${target_pid}" ]]; then
 fi
 
 if [[ -z "${target_pid}" ]]; then
-  open -a "${target_app}"
+  open -gj -a "${target_app}"
   sleep 2
   target_pid="$(pgrep -f "${target_executable}" | head -1 || true)"
 fi

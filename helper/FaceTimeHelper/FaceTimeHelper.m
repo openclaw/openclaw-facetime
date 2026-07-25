@@ -34,6 +34,9 @@
 #ifndef OPENCLAW_FACETIME_HELPER_TOKEN
 #error "Build the helper with scripts/build-helper-macabi.sh to configure IPC authentication."
 #endif
+#ifndef OPENCLAW_FACETIME_HELPER_BUILD_ID
+#error "Build the helper with scripts/build-helper-macabi.sh to configure its build identity."
+#endif
 
 static NSString *HelperHMAC(NSString *message) {
     NSData *key = [[NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_TOKEN] dataUsingEncoding:NSUTF8StringEncoding];
@@ -565,12 +568,17 @@ FACETIMEHELPER *plugin;
             : @"";
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
         if (nonce.length > 0) {
+            NSString *buildID = [NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_BUILD_ID];
+            NSNumber *processID = @(getpid());
             NSString *proof = HelperHMAC(
-                [NSString stringWithFormat:@"helper\n%@\n%@", bundleIdentifier, nonce]
+                [NSString stringWithFormat:@"helper\n%@\n%@\n%@\n%@",
+                    bundleIdentifier, nonce, buildID, processID]
             );
             [controller sendMessage: @{
                 @"event": @"auth-response",
                 @"bundle_identifier": bundleIdentifier,
+                @"build_id": buildID,
+                @"process_id": processID,
                 @"nonce": nonce,
                 @"auth": proof,
             }];

@@ -9,6 +9,7 @@ import {
 } from "../src/helper-rpc.js";
 
 const TEST_HELPER_AUTH_TOKEN = "a".repeat(64);
+const TEST_HELPER_BUILD_ID = "b".repeat(64);
 
 async function reservePort(): Promise<number> {
   const server = net.createServer();
@@ -39,6 +40,8 @@ async function registerHelper(
   socket: net.Socket,
   helper: FaceTimeHelperSocketServer,
   bundleIdentifier: string,
+  buildId: string | null = TEST_HELPER_BUILD_ID,
+  expectConnected = true,
 ): Promise<void> {
   const challengePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
     socket.once("data", (chunk) => {
@@ -54,18 +57,26 @@ async function registerHelper(
   );
   const challenge = await challengePromise;
   const nonce = String(challenge.nonce);
+  const processId = buildId === null ? 0 : 1234;
   const auth = createHmac("sha256", TEST_HELPER_AUTH_TOKEN)
-    .update(`helper\n${bundleIdentifier}\n${nonce}`)
+    .update(
+      buildId === null
+        ? `helper\n${bundleIdentifier}\n${nonce}`
+        : `helper\n${bundleIdentifier}\n${nonce}\n${buildId}\n${processId}`,
+    )
     .digest("hex");
   socket.write(
     `${JSON.stringify({
       event: "auth-response",
       bundle_identifier: bundleIdentifier,
+      ...(buildId === null ? {} : { build_id: buildId, process_id: processId }),
       nonce,
       auth,
     })}\r\n`,
   );
-  await waitFor(() => helper.connectedHelperBundles.includes(bundleIdentifier));
+  if (expectConnected) {
+    await waitFor(() => helper.connectedHelperBundles.includes(bundleIdentifier));
+  }
 }
 
 describe("FaceTime helper RPC", () => {
@@ -86,6 +97,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -132,6 +144,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -174,6 +187,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -239,6 +253,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -291,6 +306,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -329,6 +345,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -375,6 +392,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -425,6 +443,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -438,6 +457,64 @@ describe("FaceTime helper RPC", () => {
     ).rejects.toBeInstanceOf(FaceTimeHelperUnavailableError);
   });
 
+  it("rejects an authenticated stale helper and reports its process", async () => {
+    const port = await reservePort();
+    let staleHelper: { bundleIdentifier: string; processId: number } | undefined;
+    helper = new FaceTimeHelperSocketServer({
+      host: "127.0.0.1",
+      port,
+      logger: console,
+      ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
+      onMessage: () => undefined,
+      onStale: (bundleIdentifier, processId) => {
+        staleHelper = { bundleIdentifier, processId };
+      },
+    });
+    await helper.start();
+
+    client = net.createConnection({ host: "127.0.0.1", port });
+    client.setEncoding("utf8");
+    await new Promise<void>((resolve) => client?.once("connect", resolve));
+    await registerHelper(client, helper, "com.apple.FaceTime", "c".repeat(64), false);
+    await waitFor(() => Boolean(staleHelper));
+
+    expect(staleHelper).toEqual({
+      bundleIdentifier: "com.apple.FaceTime",
+      processId: 1234,
+    });
+    expect(helper.connectedSockets).toBe(0);
+  });
+
+  it("recognizes a pre-build-id helper as stale without trusting it", async () => {
+    const port = await reservePort();
+    let staleHelper: { bundleIdentifier: string; processId: number } | undefined;
+    helper = new FaceTimeHelperSocketServer({
+      host: "127.0.0.1",
+      port,
+      logger: console,
+      ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
+      onMessage: () => undefined,
+      onStale: (bundleIdentifier, processId) => {
+        staleHelper = { bundleIdentifier, processId };
+      },
+    });
+    await helper.start();
+
+    client = net.createConnection({ host: "127.0.0.1", port });
+    client.setEncoding("utf8");
+    await new Promise<void>((resolve) => client?.once("connect", resolve));
+    await registerHelper(client, helper, "com.apple.FaceTime", null, false);
+    await waitFor(() => Boolean(staleHelper));
+
+    expect(staleHelper).toEqual({
+      bundleIdentifier: "com.apple.FaceTime",
+      processId: 0,
+    });
+    expect(helper.connectedSockets).toBe(0);
+  });
+
   it("queries the helper for an outgoing call by handle", async () => {
     const port = await reservePort();
     helper = new FaceTimeHelperSocketServer({
@@ -445,6 +522,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -482,6 +560,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -529,6 +608,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
     });
     await helper.start();
@@ -578,6 +658,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => {
         injectedEvents += 1;
       },
@@ -641,6 +722,7 @@ describe("FaceTime helper RPC", () => {
       port,
       logger: console,
       ipcKey: TEST_HELPER_AUTH_TOKEN,
+      buildId: TEST_HELPER_BUILD_ID,
       onMessage: () => undefined,
       onDisconnect: () => {
         disconnects += 1;

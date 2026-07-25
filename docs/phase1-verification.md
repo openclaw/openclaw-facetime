@@ -14,6 +14,7 @@ pnpm typecheck
 pnpm test
 pnpm build
 pnpm build:capture
+pnpm build:helper:macabi
 bash -n scripts/*.sh
 npm pack --dry-run
 ```
@@ -30,7 +31,7 @@ All required checks must pass. At call time, the helper answers with uplink mute
 
 ## FaceTime video acceptance
 
-1. Open FaceTime and inject the helper.
+1. Start the gateway and confirm `facetime.status` reports the FaceTime helper connected.
 2. Select `OpenClaw-Mic` as FaceTime's microphone and physical speakers or headphones as output.
 3. Run preflight.
 4. Place the whitelisted iPhone call.

@@ -10,6 +10,7 @@ import {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { createFaceTimeRuntime, type FaceTimeRuntime } from "./runtime-entry.js";
 import { formatErrorMessage } from "./src/errors.js";
+import { inspectFaceTimeDriver } from "./src/driver-setup.js";
 import {
   resolveFaceTimeConfig,
   validateFaceTimeConfig,
@@ -35,9 +36,6 @@ const faceTimeConfigSchema = {
   },
 };
 
-let runtimePromise: Promise<FaceTimeRuntime> | undefined;
-let runtime: FaceTimeRuntime | undefined;
-
 const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
   id: "facetime",
   name: "FaceTime",
@@ -46,6 +44,8 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
   register(api: OpenClawPluginApi) {
     const config = resolveFaceTimeConfig(api.pluginConfig);
     const validation = validateFaceTimeConfig(config);
+    const pluginRoot = resolvePluginRoot(import.meta.url);
+    let runtimePromise: Promise<FaceTimeRuntime> | undefined;
 
     const ensureRuntime = async () => {
       if (!config.enabled) {
@@ -54,19 +54,39 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
       if (!validation.valid) {
         throw new Error(validation.errors.join("; "));
       }
-      if (runtime) {
-        return runtime;
-      }
       runtimePromise ??= createFaceTimeRuntime({
         config,
         fullConfig: api.config,
         runtime: api.runtime,
         logger: api.logger,
-        pluginRoot: resolvePluginRoot(import.meta.url),
+        pluginRoot,
+      }).catch((error) => {
+        runtimePromise = undefined;
+        throw error;
       });
-      runtime = await runtimePromise;
-      return runtime;
+      return await runtimePromise;
     };
+
+    api.registerService({
+      id: "facetime-runtime",
+      async start() {
+        if (!config.enabled || !validation.valid) {
+          return;
+        }
+        try {
+          await ensureRuntime();
+        } catch (error) {
+          api.logger.warn(`[facetime] startup skipped: ${formatErrorMessage(error)}`);
+        }
+      },
+      async stop() {
+        const current = runtimePromise;
+        runtimePromise = undefined;
+        if (current) {
+          await (await current).stop();
+        }
+      },
+    });
 
     api.registerGatewayMethod(
       "facetime.status",
@@ -79,6 +99,36 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
         }
       },
       { scope: "operator.read" },
+    );
+
+    api.registerGatewayMethod(
+      "facetime.driverStatus",
+      async ({ respond }: GatewayRequestHandlerOptions) => {
+        try {
+          const status = await inspectFaceTimeDriver({
+            pluginRoot,
+            runCommandWithTimeout: api.runtime.system.runCommandWithTimeout,
+          });
+          respond(true, { status });
+        } catch (error) {
+          respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
+        }
+      },
+      { scope: "operator.read" },
+    );
+
+    api.registerGatewayMethod(
+      "facetime.installDriver",
+      async ({ respond }: GatewayRequestHandlerOptions) => {
+        try {
+          const current = await ensureRuntime();
+          const result = await current.installDriver();
+          respond(true, { ok: true, ...result });
+        } catch (error) {
+          respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
+        }
+      },
+      { scope: "operator.admin" },
     );
 
     api.registerGatewayMethod(
@@ -144,11 +194,6 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
       { scope: "operator.write" },
     );
 
-    void ensureRuntime().catch((error) => {
-      api.logger.warn(`[facetime] startup skipped: ${formatErrorMessage(error)}`);
-      runtimePromise = undefined;
-      runtime = undefined;
-    });
   },
 });
 

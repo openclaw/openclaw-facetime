@@ -9,9 +9,11 @@ type HelperSocketServerParams = {
   port: number;
   logger: RuntimeLogger;
   ipcKey: string;
+  buildId: string;
   onMessage: (message: unknown) => void;
-  onConnect?: () => void;
+  onConnect?: (bundleIdentifier: string) => void;
   onDisconnect?: (bundleIdentifier: string) => void;
+  onStale?: (bundleIdentifier: string, processId: number) => void;
 };
 
 export type HelperActionResult = Record<string, unknown>;
@@ -239,21 +241,40 @@ export class FaceTimeHelperSocketServer {
         typeof record.bundle_identifier === "string" ? record.bundle_identifier.trim() : "";
       const nonce = typeof record.nonce === "string" ? record.nonce : "";
       const receivedAuth = typeof record.auth === "string" ? record.auth : "";
+      const buildId = typeof record.build_id === "string" ? record.build_id.trim() : "";
+      const processId =
+        typeof record.process_id === "number" && Number.isSafeInteger(record.process_id)
+          ? record.process_id
+          : 0;
       const expectedNonce = this.#socketAuthChallenges.get(socket);
       const expectedAuth = helperHmac(
         this.params.ipcKey,
+        `helper\n${bundleIdentifier}\n${nonce}\n${buildId}\n${processId}`,
+      );
+      const legacyAuth = helperHmac(
+        this.params.ipcKey,
         `helper\n${bundleIdentifier}\n${nonce}`,
       );
+      const authenticatedCurrentShape =
+        processId > 0 && secureStringsEqual(receivedAuth, expectedAuth);
+      const authenticatedLegacyShape =
+        buildId === "" && processId === 0 && secureStringsEqual(receivedAuth, legacyAuth);
       if (
         expectedNonce === nonce &&
         FACETIME_HELPER_BUNDLES.has(bundleIdentifier) &&
-        secureStringsEqual(receivedAuth, expectedAuth)
+        (authenticatedCurrentShape || authenticatedLegacyShape)
       ) {
+        if (authenticatedLegacyShape || buildId !== this.params.buildId) {
+          this.#socketAuthChallenges.delete(socket);
+          this.params.onStale?.(bundleIdentifier, processId);
+          socket.destroy();
+          return;
+        }
         const wasAuthenticated = this.#socketBundleIdentifiers.has(socket);
         this.#socketBundleIdentifiers.set(socket, bundleIdentifier);
         this.#socketAuthChallenges.delete(socket);
         if (!wasAuthenticated) {
-          this.params.onConnect?.();
+          this.params.onConnect?.(bundleIdentifier);
         }
       }
       return;
