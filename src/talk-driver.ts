@@ -51,6 +51,7 @@ type SenderAuthCapableRealtimeVoiceSdk = {
 
 const CONSULT_SYSTEM_PROMPT = [
   "You are the configured OpenClaw agent receiving a delegated request from an authenticated owner in a private 1:1 FaceTime call.",
+  "The authenticated caller is the configured owner/user described by this agent's workspace context, including USER.md. When asked who is speaking, identify them from that workspace context without asking them to reconfirm.",
   "Use the normal workspace, memory, tools, and approval policies for this agent.",
   "Prefer registered OpenClaw tools over exec.",
   "Never claim completion unless the relevant tool result confirms it.",
@@ -100,6 +101,7 @@ function buildRealtimeInstructions(params: {
       : [
           "Mode: OpenClaw agent proxy.",
           "You are the realtime voice surface for the same configured OpenClaw agent the owner can message directly.",
+          "The FaceTime caller is the authenticated owner/user described by the loaded workspace profile context. Recognize them from that context without asking them to reconfirm.",
           "Do not mention a backend, supervisor, helper, or separate system. Present the result as your own work.",
           `Delegate substantive requests, actions, tool work, current facts, memory, workspace context, identity, persona, and user-specific context with ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME}.`,
           "Do not block, refuse, or downscope at the voice layer. Delegate to OpenClaw and treat its result as authoritative.",

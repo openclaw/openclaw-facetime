@@ -417,6 +417,9 @@ describe("FaceTime talk driver lifecycle", () => {
           senderIsOwner: true,
           messageProvider: "webchat",
           lane: "facetime:call-1",
+          extraSystemPrompt: expect.stringContaining(
+            "configured owner/user described by this agent's workspace context",
+          ),
         }),
       ),
     );
@@ -469,6 +472,9 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.sessionParams?.instructions).toContain("Speak warmly and keep answers short.");
     expect(mocks.sessionParams?.instructions).toContain("Name: Tide");
     expect(mocks.sessionParams?.instructions).toContain("same configured OpenClaw agent");
+    expect(mocks.sessionParams?.instructions).toContain(
+      "authenticated owner/user described by the loaded workspace profile context",
+    );
     expect(mocks.sessionParams?.instructions).toContain("Consult behavior: always.");
     expect(mocks.sessionParams?.instructions).toContain("Never claim you retried");
     expect(mocks.sessionParams?.instructions).not.toContain("Lobster");
