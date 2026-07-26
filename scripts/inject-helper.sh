@@ -29,6 +29,25 @@ case "${target_app}" in
     ;;
 esac
 
+if ! /usr/bin/csrutil status 2>/dev/null | grep -Eq \
+  'System Integrity Protection status: disabled|Debugging Restrictions: disabled'; then
+  cat >&2 <<'EOF'
+System Integrity Protection debugging restrictions are enabled.
+
+This helper uses LLDB to load into Apple's protected FaceTime and Phone apps.
+Apple's SIP runtime protections reject that attach even for root. Disable SIP
+debugging restrictions from macOS Recovery, reboot, and rerun facetime.setup
+before injecting:
+
+  csrutil enable --without debug
+
+This preserves the other SIP protections, but allowing debugger attachment
+still reduces macOS security. This plugin never changes SIP itself.
+
+EOF
+  exit 1
+fi
+
 if ! DevToolsSecurity -status 2>/dev/null | grep -q "enabled"; then
   cat >&2 <<'EOF'
 Developer Tools mode is disabled.
@@ -97,8 +116,41 @@ fi
 echo "Injecting ${dylib}"
 echo "Target ${target_name} PID: ${target_pid}"
 
+lldb_pid=""
+watchdog_pid=""
+cleanup_attach() {
+  if [[ -n "${watchdog_pid}" ]] && kill -0 "${watchdog_pid}" 2>/dev/null; then
+    kill "${watchdog_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "${lldb_pid}" ]] && kill -0 "${lldb_pid}" 2>/dev/null; then
+    kill "${lldb_pid}" 2>/dev/null || true
+  fi
+}
+trap cleanup_attach EXIT HUP INT TERM
+
 lldb -p "${target_pid}" \
   -o "expr (void*)dlopen(\"${dylib}\", 2)" \
   -o "expr (char*)dlerror()" \
   -o detach \
-  -o quit
+  -o quit &
+lldb_pid=$!
+(
+  sleep "${FACETIME_HELPER_ATTACH_TIMEOUT_SECONDS:-90}"
+  if kill -0 "${lldb_pid}" 2>/dev/null; then
+    echo "LLDB attach to ${target_app} timed out" >&2
+    kill "${lldb_pid}" 2>/dev/null || true
+  fi
+) &
+watchdog_pid=$!
+
+set +e
+wait "${lldb_pid}"
+lldb_status=$?
+set -e
+lldb_pid=""
+kill "${watchdog_pid}" 2>/dev/null || true
+wait "${watchdog_pid}" 2>/dev/null || true
+watchdog_pid=""
+if [[ "${lldb_status}" -ne 0 ]]; then
+  exit "${lldb_status}"
+fi

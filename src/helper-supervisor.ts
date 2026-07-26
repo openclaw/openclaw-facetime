@@ -10,6 +10,8 @@ type HelperSupervisorTargetState = {
   connected: boolean;
   attempts: number;
   injecting: boolean;
+  queued: boolean;
+  retryScheduled: boolean;
   stale: boolean;
   staleProcessId?: number;
   lastError?: string;
@@ -26,6 +28,7 @@ type HelperSupervisorParams = {
   retryDelaysMs?: readonly number[];
   targetAvailable?: (target: FaceTimeHelperTarget) => boolean;
   processAlive?: (processId: number) => boolean;
+  connectionGraceMs?: number;
 };
 
 const TARGET_BUNDLES: Record<FaceTimeHelperTarget, ReadonlySet<string>> = {
@@ -44,15 +47,16 @@ const TARGET_EXECUTABLES: Record<FaceTimeHelperTarget, string> = {
 const DEFAULT_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 30_000, 60_000] as const;
 
 function targetForBundle(bundleIdentifier: string): FaceTimeHelperTarget | undefined {
-  return (Object.entries(TARGET_BUNDLES) as Array<
-    [FaceTimeHelperTarget, ReadonlySet<string>]
-  >).find(([, bundles]) => bundles.has(bundleIdentifier))?.[0];
+  return (
+    Object.entries(TARGET_BUNDLES) as Array<[FaceTimeHelperTarget, ReadonlySet<string>]>
+  ).find(([, bundles]) => bundles.has(bundleIdentifier))?.[0];
 }
 
 export class FaceTimeHelperSupervisor {
   readonly #states: Map<FaceTimeHelperTarget, HelperSupervisorTargetState>;
   readonly #timers = new Map<FaceTimeHelperTarget, ReturnType<typeof setTimeout>>();
   readonly #retryDelaysMs: readonly number[];
+  #injectionChain: Promise<void> = Promise.resolve();
   #started = false;
 
   constructor(private readonly params: HelperSupervisorParams) {
@@ -67,7 +71,15 @@ export class FaceTimeHelperSupervisor {
         .filter((target) => targetAvailable(target))
         .map((target) => [
           target,
-          { target, connected: false, attempts: 0, injecting: false, stale: false },
+          {
+            target,
+            connected: false,
+            attempts: 0,
+            injecting: false,
+            queued: false,
+            retryScheduled: false,
+            stale: false,
+          },
         ]),
     );
   }
@@ -142,7 +154,10 @@ export class FaceTimeHelperSupervisor {
 
   status(): FaceTimeHelperSupervisorStatus {
     this.#refreshConnections();
-    return [...this.#states.values()].map((state) => ({ ...state }));
+    return [...this.#states.values()].map((state) => ({
+      ...state,
+      retryScheduled: this.#timers.has(state.target),
+    }));
   }
 
   #refreshConnections(): void {
@@ -169,7 +184,7 @@ export class FaceTimeHelperSupervisor {
     this.#cancelTimer(target);
     const timer = setTimeout(() => {
       this.#timers.delete(target);
-      void this.#inject(target);
+      this.#enqueueInjection(target);
     }, delayMs);
     timer.unref?.();
     this.#timers.set(target, timer);
@@ -238,6 +253,35 @@ export class FaceTimeHelperSupervisor {
     }
   }
 
+  #enqueueInjection(target: FaceTimeHelperTarget): void {
+    const state = this.#states.get(target);
+    if (!state || state.queued || state.injecting) {
+      return;
+    }
+    state.queued = true;
+    const pending = this.#injectionChain.then(async () => {
+      state.queued = false;
+      await this.#inject(target);
+    });
+    this.#injectionChain = pending.catch(() => undefined);
+  }
+
+  async #waitForAuthenticatedConnection(target: FaceTimeHelperTarget): Promise<void> {
+    const deadline = Date.now() + (this.params.connectionGraceMs ?? 10_000);
+    while (this.#started && Date.now() < deadline) {
+      this.#refreshConnections();
+      const state = this.#states.get(target);
+      if (!state || state.connected || state.stale) {
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 250);
+        timer.unref?.();
+      });
+    }
+    this.#refreshConnections();
+  }
+
   async #inject(target: FaceTimeHelperTarget): Promise<void> {
     if (!this.#started) {
       return;
@@ -253,18 +297,24 @@ export class FaceTimeHelperSupervisor {
     try {
       const result = await this.params.runCommandWithTimeout(
         ["/bin/bash", script, "--app", target],
-        { timeoutMs: 45_000 },
+        { timeoutMs: 120_000 },
       );
       if (result.code !== 0) {
         throw new Error(result.stderr || result.stdout || `exit ${result.code}`);
       }
       state.lastError = undefined;
       this.params.logger.info(`[facetime] injected helper into ${target}`);
+      if (!state.connected && !state.stale) {
+        await this.#waitForAuthenticatedConnection(target);
+        if (!state.connected && !state.stale) {
+          throw new Error(
+            `${target} helper injection completed but no authenticated connection arrived`,
+          );
+        }
+      }
     } catch (error) {
       state.lastError = formatErrorMessage(error);
-      this.params.logger.warn(
-        `[facetime] ${target} helper injection failed: ${state.lastError}`,
-      );
+      this.params.logger.warn(`[facetime] ${target} helper injection failed: ${state.lastError}`);
     } finally {
       state.injecting = false;
     }

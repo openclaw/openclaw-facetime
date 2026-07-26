@@ -6,6 +6,7 @@ export type FaceTimeDriverStatus = "current" | "invalid" | "missing" | "outdated
 type DriverSetupParams = {
   pluginRoot: string;
   runCommandWithTimeout: PluginRuntime["system"]["runCommandWithTimeout"];
+  signal?: AbortSignal;
 };
 
 function readDriverStatus(output: string): FaceTimeDriverStatus {
@@ -38,9 +39,7 @@ export async function installFaceTimeDriver(
   params: DriverSetupParams & { callActive: boolean },
 ): Promise<{ changed: boolean; status: "current" }> {
   if (params.callActive) {
-    throw new Error(
-      "Cannot install the FaceTime audio driver during an active or pending call",
-    );
+    throw new Error("Cannot install the FaceTime audio driver during an active or pending call");
   }
   const before = await inspectFaceTimeDriver(params);
   if (before === "current") {
@@ -48,7 +47,10 @@ export async function installFaceTimeDriver(
   }
   const script = resolve(params.pluginRoot, "scripts", "install-driver.sh");
   const result = await params.runCommandWithTimeout(["/bin/sh", script, "--ensure"], {
-    timeoutMs: 300_000,
+    // The macOS administrator sheet can legitimately remain open while the
+    // operator is away. Runtime shutdown aborts the whole process tree instead.
+    killProcessTree: true,
+    ...(params.signal ? { signal: params.signal } : {}),
   });
   if (result.code !== 0) {
     throw new Error(

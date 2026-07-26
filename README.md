@@ -56,6 +56,11 @@ without changing the system:
 openclaw gateway call facetime.driverStatus --json
 ```
 
+`facetime.installDriver` acknowledges as soon as setup starts so the gateway
+call does not time out while the administrator prompt is open. Follow
+`driverInstall.phase` in `facetime.status`; it becomes `succeeded` or `failed`
+when setup finishes.
+
 For development, `pnpm build:driver` and `pnpm install:driver` invoke the same
 build and installation path.
 
@@ -79,6 +84,27 @@ opens FaceTime and Phone in the background if needed, injects each process, and
 retries with bounded backoff whenever an authenticated helper disconnects.
 There is no separate LaunchAgent and no CocoaPods dependency, so plugin updates
 and removal cannot leave a stale helper service behind.
+
+### System Integrity Protection requirement
+
+The current helper injection architecture requires SIP debugging restrictions
+to be disabled. FaceTime and Phone are protected Apple system apps, and Apple
+documents that SIP rejects LLDB attachment to protected processes even for
+root. This is a security-sensitive machine prerequisite, not something the
+plugin can or should change automatically.
+
+From macOS Recovery, open Terminal and run:
+
+```sh
+csrutil enable --without debug
+```
+
+Reboot, then confirm `csrutil status` reports `Debugging Restrictions:
+disabled` before starting the gateway. This keeps the other SIP protections
+enabled, but allowing debugger attachment still reduces macOS security. Use a
+dedicated OpenClaw Mac, keep it patched and physically controlled, and do not
+install unrelated software on it. A future helper-free implementation should
+remove this requirement.
 
 Enable Developer Tools mode once from an interactive Terminal before the first
 automatic injection:
@@ -137,6 +163,15 @@ FaceTime video calls use FaceTime. FaceTime audio calls use Phone on current mac
 
 Do not select an Aggregate, Multi-Output, BlackHole, `OpenClaw-Feed`, or `OpenClaw-Mic` device as the call output.
 
+For unattended inbound calls on a remotely managed Mac:
+
+- Keep Focus off, or configure the active Focus to allow the expected caller.
+- In System Settings > Notifications, set "when mirroring or sharing the
+  display" to "Allow Notifications." macOS otherwise rejects an incoming call
+  through its DND filter before the injected helper can observe or answer it.
+- If Phone diverts filtered calls before the helper can answer, turn off Live
+  Voicemail in Phone > Settings > Calls while diagnosing the route.
+
 The Core Audio process tap starts before auto-answer and uses per-process mute behavior. Caller audio is still captured for OpenClaw, but the call process sends nothing to speakers or headphones. This suppression follows the process across volume and default-output changes and does not change the Mac's global mute state.
 
 If carrier hangup fails, the helper safety-mutes both directions, retains the process tap, and retries instead of dropping local protection around a still-connected call.
@@ -144,6 +179,37 @@ If carrier hangup fails, the helper safety-mutes both directions, retains the pr
 ## Preflight and live test
 
 Start the OpenClaw gateway with the plugin enabled, then run:
+
+```sh
+openclaw gateway call facetime.setup --json
+```
+
+The guided setup report checks Xcode command line tools, developer-tools
+access, SIP debugging restrictions, the paired audio driver, automatic helper
+injection into FaceTime and Phone, Focus, notification behavior while the
+display is shared, and all preflight checks below. It returns machine-readable
+actions for anything that still needs attention.
+
+Safe repairs happen automatically when the plugin runtime starts: native
+artifacts are built when missing, FaceTime and Phone are launched, and the
+authenticated helper is injected and supervised. Protected macOS changes are
+never applied silently:
+
+- Install or update the audio driver with `facetime.installDriver`. macOS may
+  request administrator approval and Core Audio restarts after installation.
+- Grant Screen & System Audio Recording in System Settings when requested.
+- Enable developer tools access with
+  `sudo /usr/sbin/DevToolsSecurity -enable` if setup reports it disabled.
+- Disable only SIP debugging restrictions from macOS Recovery after accepting
+  the security tradeoff. The plugin detects the state but never changes it.
+- Turn off Focus and allow notifications while mirroring or sharing the
+  display for unattended incoming calls.
+
+FaceTime sign-in and the final per-process audio route do not have supported
+macOS readiness APIs. The report marks those checks as `verify-on-call` until a
+live call proves caller audio, assistant audio, and Mac speaker suppression.
+
+For the lower-level audio preflight alone, run:
 
 ```sh
 openclaw gateway call facetime.preflight --json

@@ -43,6 +43,7 @@ import {
 import { assertPairedAudioTransport } from "./paired-audio-transport.js";
 import { ensureCaptureBinary, ensureHelperArtifacts } from "./plugin-paths.js";
 import { runFaceTimePreflight, type FaceTimePreflightResult } from "./preflight.js";
+import { runFaceTimeSetup, type FaceTimeSetupReport } from "./setup.js";
 import { startFaceTimeTalkDriver, type FaceTimeTalkDriver } from "./talk-driver.js";
 import { summarizeRecentTalkEvents, type FaceTimeTalkEventSummary } from "./talk-events-summary.js";
 import { playFaceTimeTestAudio } from "./test-audio.js";
@@ -101,6 +102,13 @@ export type FaceTimeRuntimeStatus = {
   helperConnected: boolean;
   helperTargets: FaceTimeHelperSupervisorStatus;
   driverInstallPending: boolean;
+  driverInstall: {
+    phase: "idle" | "installing" | "succeeded" | "failed";
+    startedAt?: string;
+    finishedAt?: string;
+    changed?: boolean;
+    error?: string;
+  };
   processOutputSuppressed: boolean;
   outboundCallPending?: {
     dialID: string;
@@ -141,11 +149,12 @@ export type FaceTimeRuntimeStatus = {
 export type FaceTimeRuntime = {
   config: FaceTimeConfig;
   status(): Promise<FaceTimeRuntimeStatus>;
+  setup(): Promise<FaceTimeSetupReport>;
   preflight(): Promise<FaceTimePreflightResult>;
   dial(params: { handle: unknown; mode?: unknown }): Promise<FaceTimeDialResult>;
   hangup(params?: { callUUID?: unknown }): Promise<{ callUUID?: string; dialID?: string }>;
   testAudio(params?: { phrase?: unknown }): Promise<{ phrase: string; deviceName: string }>;
-  installDriver(): Promise<{ changed: boolean; status: "current" }>;
+  installDriver(): Promise<{ started: true }>;
   stop(): Promise<void>;
 };
 
@@ -241,6 +250,9 @@ export async function createFaceTimeRuntime(params: {
   let outboundCallPending: PendingFaceTimeDial | undefined;
   let outboundReconcileTimer: NodeJS.Timeout | undefined;
   let driverInstallPending = false;
+  let driverInstall: FaceTimeRuntimeStatus["driverInstall"] = { phase: "idle" };
+  let driverInstallAbortController: AbortController | undefined;
+  let driverInstallTask: Promise<void> | undefined;
   const captureBinary = await ensureCaptureBinary({
     pluginRoot: params.pluginRoot,
     runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
@@ -259,8 +271,8 @@ export async function createFaceTimeRuntime(params: {
   };
   const readHelperResults = (result: HelperActionResult): HelperActionResult[] =>
     Array.isArray(result.helperResults)
-      ? result.helperResults.filter(
-          (entry): entry is HelperActionResult => Boolean(entry && typeof entry === "object"),
+      ? result.helperResults.filter((entry): entry is HelperActionResult =>
+          Boolean(entry && typeof entry === "object"),
         )
       : [result];
   const readOutboundCallUUID = (result: HelperActionResult): string | undefined =>
@@ -389,11 +401,14 @@ export async function createFaceTimeRuntime(params: {
     }, OUTBOUND_RECONCILE_DELAY_MS);
     outboundReconcileTimer.unref?.();
   };
-  const cancelPendingOutboundCall = async (): Promise<{
-    callUUID?: string;
-    dialID: string;
-    handle: string;
-  } | undefined> => {
+  const cancelPendingOutboundCall = async (): Promise<
+    | {
+        callUUID?: string;
+        dialID: string;
+        handle: string;
+      }
+    | undefined
+  > => {
     if (!outboundCallPending && !outboundDialInFlight) {
       return undefined;
     }
@@ -430,8 +445,7 @@ export async function createFaceTimeRuntime(params: {
     if (!cancelled && !definitivelyAbsent) {
       throw new Error("FaceTime helper could not confirm outbound call cancellation");
     }
-    callUUID =
-      helperResults.map(readOutboundCallUUID).find((value) => Boolean(value)) ?? callUUID;
+    callUUID = helperResults.map(readOutboundCallUUID).find((value) => Boolean(value)) ?? callUUID;
     clearOutboundCallPending();
     return { ...(callUUID ? { callUUID } : {}), dialID, handle };
   };
@@ -444,10 +458,7 @@ export async function createFaceTimeRuntime(params: {
     buildId: helperBuildId,
     onMessage(message) {
       const outboundIdentity = normalizeFaceTimeOutboundIdentityEvent(message);
-      if (
-        outboundIdentity &&
-        outboundCallPending?.dialID === outboundIdentity.data.dial_id
-      ) {
+      if (outboundIdentity && outboundCallPending?.dialID === outboundIdentity.data.dial_id) {
         retainFaceTimeDialCallUUID(outboundCallPending, outboundIdentity.data.call_uuid);
         outboundCallPending.proxyIdentifier =
           outboundIdentity.data.proxy_identifier ?? outboundCallPending.proxyIdentifier;
@@ -892,11 +903,7 @@ export async function createFaceTimeRuntime(params: {
         return;
       }
       await activateCall(event);
-      if (
-        authorizedPending &&
-        outboundCallPending === authorizedPending &&
-        calls.has(callUUID)
-      ) {
+      if (authorizedPending && outboundCallPending === authorizedPending && calls.has(callUUID)) {
         const activeCall = calls.get(callUUID);
         if (activeCall && authorizedPending.callUUIDAliases) {
           activeCall.callUUIDAliases = new Set(authorizedPending.callUUIDAliases);
@@ -929,61 +936,73 @@ export async function createFaceTimeRuntime(params: {
     `[facetime] listening for FaceTime helper events on ${config.helperHost}:${config.helperPort}`,
   );
 
+  const readStatus = async (): Promise<FaceTimeRuntimeStatus> => ({
+    enabled: true,
+    helperConnected: helper.connectedSockets > 0,
+    helperTargets: helperSupervisor?.status() ?? [],
+    driverInstallPending,
+    driverInstall,
+    processOutputSuppressed: [...calls.values()].some(
+      (call) => call.talk?.processOutputSuppressed() === true,
+    ),
+    outboundCallPending: outboundCallPending
+      ? {
+          dialID: outboundCallPending.dialID,
+          delivery: outboundCallPending.delivery,
+          handle: outboundCallPending.handle,
+          mode: outboundCallPending.mode,
+          requestedAt: outboundCallPending.requestedAt,
+          proxyIdentifier: outboundCallPending.proxyIdentifier,
+        }
+      : undefined,
+    calls: [...calls.values()].map((call) => ({
+      callUUID: call.callUUID,
+      handle: call.handle,
+      callStatus: call.callStatus,
+      isSendingAudio: call.isSendingAudio,
+      isSendingTransmission: call.isSendingTransmission,
+      isUplinkMuted: call.isUplinkMuted,
+      isSendingVideo: call.isSendingVideo,
+      conversationUUID: call.conversationUUID,
+      conversationGroupUUID: call.conversationGroupUUID,
+      conversationAudioEnabled: call.conversationAudioEnabled,
+      conversationVideoEnabled: call.conversationVideoEnabled,
+      conversationAVMode: call.conversationAVMode,
+      conversationResolvedAudioVideoMode: call.conversationResolvedAudioVideoMode,
+      localMeterLevel: call.localMeterLevel,
+      remoteMeterLevel: call.remoteMeterLevel,
+      maxLocalMeterLevel: call.maxLocalMeterLevel,
+      maxRemoteMeterLevel: call.maxRemoteMeterLevel,
+      realtimeActive: Boolean(call.talk),
+      audioReady: call.audioReady,
+      audioTransport: call.audioTransport
+        ? {
+            ...call.audioTransport,
+            processOutputSuppressed: call.talk?.processOutputSuppressed() === true,
+          }
+        : undefined,
+      lastHelperAction: call.lastHelperAction,
+      lastRoutingError: call.lastRoutingError,
+      carrierHangupPending: call.carrierHangupPending,
+      recentTalkEvents: call.talk
+        ? summarizeRecentTalkEvents(call.talk.recentTalkEvents)
+        : undefined,
+    })),
+  });
+  const runPreflight = async (): Promise<FaceTimePreflightResult> =>
+    await runFaceTimePreflight({
+      config,
+      fullConfig: params.fullConfig,
+      runtime: params.runtime,
+      logger: params.logger,
+      helperConnected: helper.connectedSockets > 0,
+      captureBinary,
+    });
+
   return {
     config,
     async status() {
-      return {
-        enabled: true,
-        helperConnected: helper.connectedSockets > 0,
-        helperTargets: helperSupervisor?.status() ?? [],
-        driverInstallPending,
-        processOutputSuppressed: [...calls.values()].some(
-          (call) => call.talk?.processOutputSuppressed() === true,
-        ),
-        outboundCallPending: outboundCallPending
-          ? {
-              dialID: outboundCallPending.dialID,
-              delivery: outboundCallPending.delivery,
-              handle: outboundCallPending.handle,
-              mode: outboundCallPending.mode,
-              requestedAt: outboundCallPending.requestedAt,
-              proxyIdentifier: outboundCallPending.proxyIdentifier,
-            }
-          : undefined,
-        calls: [...calls.values()].map((call) => ({
-          callUUID: call.callUUID,
-          handle: call.handle,
-          callStatus: call.callStatus,
-          isSendingAudio: call.isSendingAudio,
-          isSendingTransmission: call.isSendingTransmission,
-          isUplinkMuted: call.isUplinkMuted,
-          isSendingVideo: call.isSendingVideo,
-          conversationUUID: call.conversationUUID,
-          conversationGroupUUID: call.conversationGroupUUID,
-          conversationAudioEnabled: call.conversationAudioEnabled,
-          conversationVideoEnabled: call.conversationVideoEnabled,
-          conversationAVMode: call.conversationAVMode,
-          conversationResolvedAudioVideoMode: call.conversationResolvedAudioVideoMode,
-          localMeterLevel: call.localMeterLevel,
-          remoteMeterLevel: call.remoteMeterLevel,
-          maxLocalMeterLevel: call.maxLocalMeterLevel,
-          maxRemoteMeterLevel: call.maxRemoteMeterLevel,
-          realtimeActive: Boolean(call.talk),
-          audioReady: call.audioReady,
-          audioTransport: call.audioTransport
-            ? {
-                ...call.audioTransport,
-                processOutputSuppressed: call.talk?.processOutputSuppressed() === true,
-              }
-            : undefined,
-          lastHelperAction: call.lastHelperAction,
-          lastRoutingError: call.lastRoutingError,
-          carrierHangupPending: call.carrierHangupPending,
-          recentTalkEvents: call.talk
-            ? summarizeRecentTalkEvents(call.talk.recentTalkEvents)
-            : undefined,
-        })),
-      };
+      return await readStatus();
     },
     async dial(dialParams) {
       if (stopping) {
@@ -1081,11 +1100,11 @@ export async function createFaceTimeRuntime(params: {
           : undefined;
       const findCall = () =>
         requestedCallUUID
-        ? (calls.get(requestedCallUUID) ??
-          [...calls.values()].find((candidate) =>
-            candidate.callUUIDAliases?.has(requestedCallUUID),
-          ))
-        : ([...calls.values()].find((candidate) => candidate.talk) ?? [...calls.values()][0]);
+          ? (calls.get(requestedCallUUID) ??
+            [...calls.values()].find((candidate) =>
+              candidate.callUUIDAliases?.has(requestedCallUUID),
+            ))
+          : ([...calls.values()].find((candidate) => candidate.talk) ?? [...calls.values()][0]);
       let call = findCall();
       if (!call) {
         if (
@@ -1121,15 +1140,27 @@ export async function createFaceTimeRuntime(params: {
       }
       return { callUUID: call.callUUID };
     },
-    async preflight() {
-      return await runFaceTimePreflight({
+    async setup() {
+      const preflight = runPreflight();
+      // Setup overlaps the live loopback with static checks. Observe failures
+      // immediately, then let runFaceTimeSetup surface the same rejection.
+      void preflight.catch(() => undefined);
+      // Refresh after preflight because helper injection can finish while the
+      // live loopback runs. A failed preflight is reported by setup itself.
+      const runtimeStatus = preflight.then(
+        () => readStatus(),
+        () => readStatus(),
+      );
+      return await runFaceTimeSetup({
         config,
-        fullConfig: params.fullConfig,
-        runtime: params.runtime,
-        logger: params.logger,
-        helperConnected: helper.connectedSockets > 0,
-        captureBinary,
+        pluginRoot: params.pluginRoot,
+        runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
+        runtimeStatus,
+        preflight,
       });
+    },
+    async preflight() {
+      return await runPreflight();
     },
     async testAudio(testParams) {
       const activeCall = [...calls.values()].find((call) => call.talk) ?? [...calls.values()][0];
@@ -1160,19 +1191,53 @@ export async function createFaceTimeRuntime(params: {
       // auto-answer consult it before claiming a call, so Core Audio cannot be
       // restarted underneath a newly managed call.
       driverInstallPending = true;
-      try {
-        return await installFaceTimeDriver({
-          pluginRoot: params.pluginRoot,
-          runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
-          callActive: false,
+      driverInstall = {
+        phase: "installing",
+        startedAt: new Date().toISOString(),
+      };
+      const installAbortController = new AbortController();
+      driverInstallAbortController = installAbortController;
+      driverInstallTask = installFaceTimeDriver({
+        pluginRoot: params.pluginRoot,
+        runCommandWithTimeout: params.runtime.system.runCommandWithTimeout,
+        callActive: false,
+        signal: installAbortController.signal,
+      })
+        .then((result) => {
+          driverInstall = {
+            phase: "succeeded",
+            startedAt: driverInstall.startedAt,
+            finishedAt: new Date().toISOString(),
+            changed: result.changed,
+          };
+          params.logger.info(
+            `[facetime] audio driver installation ${result.changed ? "completed" : "already current"}`,
+          );
+        })
+        .catch((error) => {
+          const message = formatErrorMessage(error);
+          driverInstall = {
+            phase: "failed",
+            startedAt: driverInstall.startedAt,
+            finishedAt: new Date().toISOString(),
+            error: message,
+          };
+          params.logger.warn(`[facetime] audio driver installation failed: ${message}`);
+        })
+        .finally(() => {
+          if (driverInstallAbortController === installAbortController) {
+            driverInstallAbortController = undefined;
+            driverInstallTask = undefined;
+            driverInstallPending = false;
+          }
         });
-      } finally {
-        driverInstallPending = false;
-      }
+      return { started: true };
     },
     async stop() {
       stopping = true;
       helperSupervisor?.stop();
+      driverInstallAbortController?.abort();
+      await driverInstallTask;
       let cleanupError: Error | undefined;
       if (outboundCallPending || outboundDialInFlight) {
         try {

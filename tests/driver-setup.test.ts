@@ -52,6 +52,7 @@ describe("FaceTime driver setup", () => {
   });
 
   it("installs and verifies a missing driver", async () => {
+    const abortController = new AbortController();
     const runCommandWithTimeout = vi
       .fn()
       .mockResolvedValueOnce({ code: 0, stdout: "missing\n", stderr: "" })
@@ -63,12 +64,13 @@ describe("FaceTime driver setup", () => {
         pluginRoot: "/tmp/facetime",
         runCommandWithTimeout: runCommandWithTimeout as any,
         callActive: false,
+        signal: abortController.signal,
       }),
     ).resolves.toEqual({ changed: true, status: "current" });
     expect(runCommandWithTimeout).toHaveBeenNthCalledWith(
       2,
       ["/bin/sh", "/tmp/facetime/scripts/install-driver.sh", "--ensure"],
-      { timeoutMs: 300_000 },
+      { killProcessTree: true, signal: abortController.signal },
     );
   });
 });

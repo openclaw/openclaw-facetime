@@ -17,6 +17,7 @@ import {
   type FaceTimeConfig,
 } from "./src/config.js";
 import { resolvePluginRoot } from "./src/plugin-paths.js";
+import { runFaceTimeSetup } from "./src/setup.js";
 
 const faceTimeConfigSchema = {
   parse(value: unknown): FaceTimeConfig {
@@ -94,6 +95,33 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
         try {
           const rt = await ensureRuntime();
           respond(true, await rt.status());
+        } catch (error) {
+          respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
+        }
+      },
+      { scope: "operator.read" },
+    );
+
+    api.registerGatewayMethod(
+      "facetime.setup",
+      async ({ respond }: GatewayRequestHandlerOptions) => {
+        try {
+          let rt: FaceTimeRuntime;
+          try {
+            rt = await ensureRuntime();
+          } catch (runtimeError) {
+            respond(
+              true,
+              await runFaceTimeSetup({
+                config,
+                pluginRoot,
+                runCommandWithTimeout: api.runtime.system.runCommandWithTimeout,
+                runtimeError: formatErrorMessage(runtimeError),
+              }),
+            );
+            return;
+          }
+          respond(true, await rt.setup());
         } catch (error) {
           respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatErrorMessage(error)));
         }
@@ -193,7 +221,6 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
       },
       { scope: "operator.write" },
     );
-
   },
 });
 
