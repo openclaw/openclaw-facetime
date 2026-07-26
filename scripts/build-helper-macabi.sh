@@ -11,7 +11,21 @@ staged_dylib="${staged_dir}/FaceTimeHelper.dylib"
 auth_dir="${HOME}/Library/Application Support/OpenClaw/FaceTime"
 ipc_key_file="${auth_dir}/helper-ipc-key"
 build_stamp_file="${auth_dir}/helper-build.sha256"
+secret_header="${build_dir}/OpenClawFaceTimeHelperSecrets.h"
 if_needed=false
+
+cleanup() {
+  if [[ -e "${secret_header}" ]]; then
+    : > "${secret_header}"
+    if [[ -x /usr/bin/trash ]]; then
+      /usr/bin/trash "${secret_header}" >/dev/null 2>&1 || true
+    else
+      /usr/bin/python3 -c 'import os, sys; os.unlink(sys.argv[1])' "${secret_header}" \
+        >/dev/null 2>&1 || true
+    fi
+  fi
+}
+trap cleanup EXIT
 
 if [[ "${1:-}" == "--if-needed" ]]; then
   if_needed=true
@@ -50,6 +64,11 @@ if [[ "${if_needed}" == true &&
   exit 0
 fi
 
+umask 077
+printf '#define OPENCLAW_FACETIME_HELPER_TOKEN "%s"\n#define OPENCLAW_FACETIME_HELPER_BUILD_ID "%s"\n' \
+  "${ipc_key}" "${source_hash}" > "${secret_header}"
+chmod 600 "${secret_header}"
+
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
   -target arm64e-apple-ios15.0-macabi \
   -dynamiclib \
@@ -57,13 +76,13 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer "${clang_bin}" \
   -fobjc-arc \
   -fmodules \
   -DDEBUG=1 \
-  "-DOPENCLAW_FACETIME_HELPER_TOKEN=\"${ipc_key}\"" \
-  "-DOPENCLAW_FACETIME_HELPER_BUILD_ID=\"${source_hash}\"" \
+  -include "${secret_header}" \
   -ObjC \
   -I "${helper_dir}/FaceTimeHelper" \
   -I "${helper_dir}/FaceTimeHelper/FaceTime" \
   -I "${helper_dir}/FaceTimeHelper/ZKSwizzle" \
   -iframework /System/Library/PrivateFrameworks \
+  "${helper_dir}/FaceTimeHelper/ActionAuthentication.m" \
   "${helper_dir}/FaceTimeHelper/FaceTimeHelper.m" \
   "${helper_dir}/FaceTimeHelper/NetworkController.m" \
   "${helper_dir}/FaceTimeHelper/CTBlockDescription.m" \

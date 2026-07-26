@@ -2,7 +2,6 @@
 set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-source_driver="${HOME}/Library/Caches/OpenClaw/FaceTime/driver/OpenClawBridge.driver"
 installed_driver="/Library/Audio/Plug-Ins/HAL/OpenClawBridge.driver"
 recipe="facetime-paired-v1"
 version="0.7.1"
@@ -53,14 +52,9 @@ if test "$(driver_status)" = "current"; then
   printf 'OpenClaw-Mic and OpenClaw-Feed are already current.\n'
   exit 0
 fi
-if test "$(driver_status_at "$source_driver")" != "current"; then
-  "$here/scripts/build-driver.sh"
-fi
-if test "$(driver_status_at "$source_driver")" != "current"; then
-  echo "Built OpenClaw paired audio driver did not verify successfully." >&2
-  exit 1
-fi
-/usr/bin/osascript "$here/scripts/install-driver.applescript" "$source_driver" "$installed_driver"
+
+/usr/bin/osascript "$here/scripts/install-driver.applescript" \
+  "$here/scripts/install-driver-root.sh"
 if test "$(driver_status)" != "current"; then
   echo "OpenClaw paired audio driver installation did not verify successfully." >&2
   exit 1

@@ -77,6 +77,7 @@ export class FaceTimeHelperSocketServer {
   readonly #sockets = new Set<net.Socket>();
   readonly #socketBundleIdentifiers = new Map<net.Socket, string>();
   readonly #socketAuthChallenges = new Map<net.Socket, string>();
+  readonly #socketAuthSessions = new Map<net.Socket, string>();
   readonly #pending = new Map<string, PendingRpc>();
   readonly #logger: RuntimeLogger;
   #started = false;
@@ -216,6 +217,7 @@ export class FaceTimeHelperSocketServer {
       this.#sockets.delete(socket);
       this.#socketBundleIdentifiers.delete(socket);
       this.#socketAuthChallenges.delete(socket);
+      this.#socketAuthSessions.delete(socket);
       if (disconnectedBundle) {
         this.params.onDisconnect?.(disconnectedBundle);
       }
@@ -272,6 +274,7 @@ export class FaceTimeHelperSocketServer {
         }
         const wasAuthenticated = this.#socketBundleIdentifiers.has(socket);
         this.#socketBundleIdentifiers.set(socket, bundleIdentifier);
+        this.#socketAuthSessions.set(socket, nonce);
         this.#socketAuthChallenges.delete(socket);
         if (!wasAuthenticated) {
           this.params.onConnect?.(bundleIdentifier);
@@ -371,14 +374,19 @@ export class FaceTimeHelperSocketServer {
   ): Promise<HelperActionResult> {
     const transactionId = randomUUID();
     const authNonce = randomUUID();
+    const authSession = this.#socketAuthSessions.get(socket);
+    if (!authSession) {
+      throw new FaceTimeHelperUnavailableError("FaceTime helper socket is not authenticated");
+    }
     const dataJSON = JSON.stringify(data);
     const auth = helperHmac(
       this.params.ipcKey,
-      `action\n${action}\n${transactionId}\n${authNonce}\n${dataJSON}`,
+      `action\n${action}\n${transactionId}\n${authSession}\n${authNonce}\n${dataJSON}`,
     );
     const payload = JSON.stringify({
       action,
       transactionId,
+      auth_session: authSession,
       auth_nonce: authNonce,
       data,
       data_json: dataJSON,

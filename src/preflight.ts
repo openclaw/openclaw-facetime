@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
+import { resolveConfiguredSecretInputString } from "openclaw/plugin-sdk/secret-input-runtime";
 import {
   FACETIME_AUDIO_SAMPLE_RATE_HZ,
   OPENCLAW_FEED_DEVICE,
@@ -176,19 +177,32 @@ printf 'paired-driver rms=%s\\n' "$rms"
   });
 }
 
-function hasProviderCredential(params: {
+async function hasProviderCredential(params: {
   config: FaceTimeConfig;
   fullConfig: OpenClawConfig;
-}): boolean {
-  const providerConfig = params.config.realtime.providers[params.config.realtime.provider];
-  if (providerConfig && "apiKey" in providerConfig) {
-    return true;
+}): Promise<boolean> {
+  const providerId = params.config.realtime.provider;
+  const providerConfig = params.config.realtime.providers[providerId];
+  if (providerConfig && Object.hasOwn(providerConfig, "apiKey")) {
+    const resolved = await resolveConfiguredSecretInputString({
+      config: params.fullConfig,
+      env: process.env,
+      value: providerConfig.apiKey,
+      path: `plugins.entries.facetime.config.realtime.providers.${providerId}.apiKey`,
+    });
+    return Boolean(resolved.value);
   }
-  const modelProvider = params.fullConfig.models?.providers?.[params.config.realtime.provider];
-  if (modelProvider?.apiKey) {
-    return true;
+  const modelProvider = params.fullConfig.models?.providers?.[providerId];
+  if (modelProvider && Object.hasOwn(modelProvider, "apiKey")) {
+    const resolved = await resolveConfiguredSecretInputString({
+      config: params.fullConfig,
+      env: process.env,
+      value: modelProvider.apiKey,
+      path: `models.providers.${providerId}.apiKey`,
+    });
+    return Boolean(resolved.value);
   }
-  return Boolean(process.env.OPENAI_API_KEY);
+  return Boolean(process.env.OPENAI_API_KEY?.trim());
 }
 
 export async function runFaceTimePreflight(params: {
@@ -301,10 +315,14 @@ export async function runFaceTimePreflight(params: {
 
   await checkPairedDriverLoopback({ runCommandWithTimeout, checks });
 
+  const providerCredentialReady = await hasProviderCredential({
+    config: params.config,
+    fullConfig: params.fullConfig,
+  });
   pushCheck(checks, {
     id: "realtime-provider",
     label: "Realtime provider credentials",
-    ok: hasProviderCredential({ config: params.config, fullConfig: params.fullConfig }),
+    ok: providerCredentialReady,
     message: `${params.config.realtime.provider}:${params.config.realtime.model}`,
   });
 

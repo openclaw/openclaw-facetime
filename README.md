@@ -87,11 +87,13 @@ and removal cannot leave a stale helper service behind.
 
 ### System Integrity Protection requirement
 
-The current helper injection architecture requires SIP debugging restrictions
-to be disabled. FaceTime and Phone are protected Apple system apps, and Apple
+The beta intentionally uses the same private-API deployment boundary as tools
+such as `imsg`: helper injection requires SIP debugging restrictions to be
+disabled. FaceTime and Phone are protected Apple system apps, and Apple
 documents that SIP rejects LLDB attachment to protected processes even for
-root. This is a security-sensitive machine prerequisite, not something the
-plugin can or should change automatically.
+root. This is a supported beta prerequisite for a dedicated Mac, not an
+unresolved release blocker and not something the plugin can or should change
+automatically.
 
 From macOS Recovery, open Terminal and run:
 
@@ -103,8 +105,8 @@ Reboot, then confirm `csrutil status` reports `Debugging Restrictions:
 disabled` before starting the gateway. This keeps the other SIP protections
 enabled, but allowing debugger attachment still reduces macOS security. Use a
 dedicated OpenClaw Mac, keep it patched and physically controlled, and do not
-install unrelated software on it. A future helper-free implementation should
-remove this requirement.
+install unrelated software on it. A future helper-free implementation can
+remove this requirement, but it is not required for the private-API beta.
 
 Enable Developer Tools mode once from an interactive Terminal before the first
 automatic injection:

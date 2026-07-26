@@ -1,4 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("openclaw/plugin-sdk/secret-input-runtime", () => ({
+  resolveConfiguredSecretInputString: vi.fn(async ({ value }: { value: unknown }) =>
+    typeof value === "string" && value.trim()
+      ? { value: value.trim() }
+      : { value: undefined, unresolvedRefReason: "configured SecretRef is unresolved" },
+  ),
+}));
+
 import { resolveFaceTimeConfig } from "../src/config.js";
 import {
   findPhysicalOutputProblem,
@@ -49,7 +58,7 @@ describe("FaceTime preflight", () => {
     const result = await runFaceTimePreflight({
       config: resolveFaceTimeConfig({
         whitelistHandles: ["omar@example.com"],
-        realtime: { providers: { openai: { apiKey: {} } } },
+        realtime: { providers: { openai: { apiKey: "test-api-key" } } },
       }),
       fullConfig: {} as any,
       runtime: runtimeWithCommands(runCommandWithTimeout),
@@ -71,6 +80,63 @@ describe("FaceTime preflight", () => {
       ["paired-driver-loopback", true, true],
       ["realtime-provider", true, true],
     ]);
+  });
+
+  it("fails provider readiness for an unresolved configured SecretRef", async () => {
+    const runCommandWithTimeout = vi.fn(async (argv: string[]) => {
+      if (argv.at(-1) === "--version") {
+        return { code: 0, stdout: "sox: SoX v14.4.2\n", stderr: "" };
+      }
+      if (argv[0] === "/bin/test" || argv[0] === "/usr/bin/pgrep") {
+        return { code: 0, stdout: "123\n", stderr: "" };
+      }
+      if (argv[0] === "/usr/sbin/system_profiler") {
+        return {
+          code: 0,
+          stdout: "        OpenClaw-Mic:\n        OpenClaw-Feed:\n",
+          stderr: "",
+        };
+      }
+      if (argv.at(-1) === "--default-devices") {
+        return { code: 0, stdout: JSON.stringify(defaults), stderr: "" };
+      }
+      if (argv.at(-1) === "--check" || argv[0] === "/bin/bash") {
+        return { code: 0, stdout: "paired-driver rms=0.42\n", stderr: "" };
+      }
+      throw new Error(`unexpected command: ${argv.join(" ")}`);
+    });
+    const missingKey = "OPENCLAW_FACETIME_TEST_MISSING_KEY";
+    const previous = process.env[missingKey];
+    delete process.env[missingKey];
+    try {
+      const result = await runFaceTimePreflight({
+        config: resolveFaceTimeConfig({
+          whitelistHandles: ["omar@example.com"],
+          realtime: {
+            providers: {
+              openai: {
+                apiKey: { source: "env", provider: "default", id: missingKey },
+              },
+            },
+          },
+        }),
+        fullConfig: {
+          secrets: { providers: { default: { source: "env" } } },
+        } as any,
+        runtime: runtimeWithCommands(runCommandWithTimeout),
+        helperConnected: true,
+        captureBinary: "/plugin/native/.build/release/facetime-audio-capture",
+      });
+
+      expect(result.checks.find((check) => check.id === "realtime-provider")?.ok).toBe(false);
+      expect(result.ok).toBe(false);
+    } finally {
+      if (previous === undefined) {
+        delete process.env[missingKey];
+      } else {
+        process.env[missingKey] = previous;
+      }
+    }
   });
 
   it("reports actionable readiness failures", async () => {

@@ -17,6 +17,7 @@ import {
   type FaceTimeConfig,
 } from "./src/config.js";
 import { resolvePluginRoot } from "./src/plugin-paths.js";
+import { stopRetainedRuntime } from "./src/runtime-lifecycle.js";
 import { runFaceTimeSetup } from "./src/setup.js";
 import { createFaceTimeCallTool, resolveFaceTimeToolApproval } from "./src/tool.js";
 
@@ -32,7 +33,7 @@ const faceTimeConfigSchema = {
     "realtime.provider": { label: "Realtime Provider", advanced: true },
     "realtime.model": { label: "Realtime Model", advanced: true },
     "realtime.voice": { label: "Realtime Voice", advanced: true },
-    "realtime.sessionKey": { label: "Lobster Session Key", advanced: true },
+    "realtime.sessionKey": { label: "Agent Session Key", advanced: true },
     "realtime.brain": { label: "Brain Mode", advanced: true },
     "realtime.toolPolicy": { label: "Tool Policy", advanced: true },
   },
@@ -41,7 +42,7 @@ const faceTimeConfigSchema = {
 const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
   id: "facetime",
   name: "FaceTime",
-  description: "Private FaceTime realtime voice carrier for Lobster",
+  description: "Private FaceTime realtime voice carrier for OpenClaw agents",
   configSchema: faceTimeConfigSchema,
   register(api: OpenClawPluginApi) {
     const config = resolveFaceTimeConfig(api.pluginConfig);
@@ -92,11 +93,11 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
         }
       },
       async stop() {
-        const current = runtimePromise;
-        runtimePromise = undefined;
-        if (current) {
-          await (await current).stop();
-        }
+        await stopRetainedRuntime(runtimePromise, (stopped) => {
+          if (runtimePromise === stopped) {
+            runtimePromise = undefined;
+          }
+        });
       },
     });
 

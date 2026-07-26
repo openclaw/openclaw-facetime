@@ -211,7 +211,7 @@ gateway_call facetime.testAudio --params "$(node -e 'console.log(JSON.stringify(
 require_yes "Did the iPhone hear the FaceTime test phrase clearly?"
 
 echo
-echo "Speak into the iPhone and wait for Lobster to respond, then press Enter."
+echo "Speak into the iPhone and wait for the configured agent to respond, then press Enter."
 read -r _
 status_json="$(read_status)"
 echo "== Realtime speech status =="
@@ -219,10 +219,10 @@ printf '%s\n' "$status_json"
 if ! status_has_event_type 'transcript|output\.audio\.delta' <<<"$status_json"; then
   echo "Warning: recentTalkEvents did not show transcript or output.audio.delta in the current status window." >&2
 fi
-require_yes "Did Lobster respond contextually to iPhone speech?"
+require_yes "Did the configured agent respond contextually to iPhone speech?"
 
 echo
-echo "Ask a tool-backed question now, then press Enter after Lobster answers."
+echo "Ask a tool-backed question now, then press Enter after the agent answers."
 read -r _
 status_json="$(read_status)"
 echo "== Tool-use status =="
@@ -233,12 +233,12 @@ fi
 require_yes "Did the tool-backed answer complete correctly?"
 
 echo
-echo "Talk over Lobster mid-sentence to test barge-in, then press Enter."
+echo "Talk over the agent mid-sentence to test barge-in, then press Enter."
 read -r _
 status_json="$(read_status)"
 echo "== Barge-in status =="
 printf '%s\n' "$status_json"
-require_yes "Did Lobster stop speaking promptly when interrupted?"
+require_yes "Did the agent stop speaking promptly when interrupted?"
 
 echo
 echo "The script can now hang up through OpenClaw."

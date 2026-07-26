@@ -12,7 +12,7 @@ work_dir=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/openclaw-driver.XXXXXX")
 archive="$work_dir/BlackHole.tar.gz"
 source_dir="$work_dir/BlackHole-$version"
 build_dir="$work_dir/build"
-output_dir="${HOME}/Library/Caches/OpenClaw/FaceTime/driver"
+output_dir="${FACETIME_DRIVER_OUTPUT_DIR:-${HOME}/Library/Caches/OpenClaw/FaceTime/driver}"
 output_driver="$output_dir/OpenClawBridge.driver"
 
 remove_tree() {

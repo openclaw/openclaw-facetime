@@ -42,7 +42,7 @@ async function registerHelper(
   bundleIdentifier: string,
   buildId: string | null = TEST_HELPER_BUILD_ID,
   expectConnected = true,
-): Promise<void> {
+): Promise<string> {
   const challengePromise = new Promise<Record<string, unknown>>((resolve, reject) => {
     socket.once("data", (chunk) => {
       try {
@@ -77,6 +77,7 @@ async function registerHelper(
   if (expectConnected) {
     await waitFor(() => helper.connectedHelperBundles.includes(bundleIdentifier));
   }
+  return nonce;
 }
 
 describe("FaceTime helper RPC", () => {
@@ -261,7 +262,7 @@ describe("FaceTime helper RPC", () => {
     client = net.createConnection({ host: "127.0.0.1", port });
     client.setEncoding("utf8");
     await new Promise<void>((resolve) => client?.once("connect", resolve));
-    await registerHelper(client, helper, "com.apple.FaceTime");
+    const authSession = await registerHelper(client, helper, "com.apple.FaceTime");
 
     const received = new Promise<Record<string, unknown>>((resolve, reject) => {
       client?.once("data", (chunk) => {
@@ -288,9 +289,10 @@ describe("FaceTime helper RPC", () => {
     });
     const expectedAuth = createHmac("sha256", TEST_HELPER_AUTH_TOKEN)
       .update(
-        `action\n${String(payload.action)}\n${String(payload.transactionId)}\n${String(payload.auth_nonce)}\n${String(payload.data_json)}`,
+        `action\n${String(payload.action)}\n${String(payload.transactionId)}\n${authSession}\n${String(payload.auth_nonce)}\n${String(payload.data_json)}`,
       )
       .digest("hex");
+    expect(payload.auth_session).toBe(authSession);
     expect(payload.auth).toBe(expectedAuth);
 
     client.write(

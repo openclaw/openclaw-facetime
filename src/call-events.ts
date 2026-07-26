@@ -190,6 +190,7 @@ export function resolveAllowlistedFaceTimeOwner(params: {
   if (!senderId) {
     return undefined;
   }
+  // Admission and owner authorization are one contract; this plugin has no guest caller tier.
   return { senderId, senderIsOwner: true };
 }
 

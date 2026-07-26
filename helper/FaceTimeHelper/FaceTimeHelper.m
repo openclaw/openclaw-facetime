@@ -6,6 +6,7 @@
 #import <objc/runtime.h>
 
 #import "NetworkController.h"
+#import "ActionAuthentication.h"
 #import "Logging.h"
 #import "ZKSwizzle.h"
 #import "TUConversationManager.h"
@@ -50,21 +51,6 @@ static NSString *HelperHMAC(NSString *message) {
     return hex;
 }
 
-static BOOL SecureStringsEqual(NSString *first, NSString *second) {
-    NSData *firstData = [first dataUsingEncoding:NSUTF8StringEncoding];
-    NSData *secondData = [second dataUsingEncoding:NSUTF8StringEncoding];
-    if (firstData.length == 0 || firstData.length != secondData.length) {
-        return NO;
-    }
-    const unsigned char *firstBytes = firstData.bytes;
-    const unsigned char *secondBytes = secondData.bytes;
-    unsigned char difference = 0;
-    for (NSUInteger index = 0; index < firstData.length; index++) {
-        difference |= firstBytes[index] ^ secondBytes[index];
-    }
-    return difference == 0;
-}
-
 static NSString *CanonicalFaceTimeHandle(NSString *value) {
     if (![value isKindOfClass:[NSString class]]) {
         return @"";
@@ -92,6 +78,7 @@ static NSString *CanonicalFaceTimeHandle(NSString *value) {
 
 static NSMutableDictionary<NSString *, TUCall *> *OutboundCallsByDialID;
 static NSMutableSet<NSString *> *CancelledOutboundDialIDs;
+static OpenClawFaceTimeActionAuthenticator *ActionAuthenticator;
 
 static void RestoreOutboundState(void) {
     TUCallCenter *owner = [TUCallCenter sharedInstance];
@@ -554,7 +541,6 @@ FACETIMEHELPER *plugin;
     if(range.location != NSNotFound) {
         message = [message substringWithRange:NSMakeRange(0, range.location + 1)];
     }
-    DLog("FACETIMEHELPER: Received raw json: %{public}@", message);
     NSError *error;
     NSData *jsonData = [message dataUsingEncoding:NSUTF8StringEncoding];
     NSDictionary *dictionary = [NSJSONSerialization JSONObjectWithData:jsonData options:kNilOptions error:&error];
@@ -568,6 +554,11 @@ FACETIMEHELPER *plugin;
             : @"";
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
         if (nonce.length > 0) {
+            if (ActionAuthenticator == nil) {
+                ActionAuthenticator = [[OpenClawFaceTimeActionAuthenticator alloc]
+                    initWithToken:[NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_TOKEN]];
+            }
+            [ActionAuthenticator resetWithSession:nonce];
             NSString *buildID = [NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_BUILD_ID];
             NSNumber *processID = @(getpid());
             NSString *proof = HelperHMAC(
@@ -600,20 +591,31 @@ FACETIMEHELPER *plugin;
         NSString *nonce = [dictionary[@"auth_nonce"] isKindOfClass:[NSString class]]
             ? dictionary[@"auth_nonce"]
             : @"";
+        NSString *authSession = [dictionary[@"auth_session"] isKindOfClass:[NSString class]]
+            ? dictionary[@"auth_session"]
+            : @"";
         NSString *dataJSON = [dictionary[@"data_json"] isKindOfClass:[NSString class]]
             ? dictionary[@"data_json"]
             : @"";
         NSString *receivedAuth = [dictionary[@"auth"] isKindOfClass:[NSString class]]
             ? dictionary[@"auth"]
             : @"";
-        NSString *signedPayload = [NSString stringWithFormat:@"action\n%@\n%@\n%@\n%@",
-            event ?: @"", transaction ?: @"", nonce, dataJSON];
-        if (nonce.length == 0 || dataJSON.length == 0 ||
-            !SecureStringsEqual(receivedAuth, HelperHMAC(signedPayload))) {
+        OpenClawFaceTimeActionAuthResult authResult = ActionAuthenticator == nil
+            ? OpenClawFaceTimeActionAuthResultUnauthenticated
+            : [ActionAuthenticator
+                consumeAction:event ?: @""
+                transactionID:transaction ?: @""
+                session:authSession
+                nonce:nonce
+                dataJSON:dataJSON
+                auth:receivedAuth];
+        if (authResult != OpenClawFaceTimeActionAuthResultAccepted) {
             if (transaction != nil) {
                 [controller sendMessage: @{
                     @"transactionId": transaction,
-                    @"error": @"Unauthenticated FaceTime helper action",
+                    @"error": authResult == OpenClawFaceTimeActionAuthResultReplay
+                        ? @"Replayed FaceTime helper action"
+                        : @"Unauthenticated FaceTime helper action",
                 }];
             }
             return;
@@ -632,7 +634,7 @@ FACETIMEHELPER *plugin;
         data = decodedData;
     }
 
-    DLog("FACETIMEHELPER: Message received: %{public}@, %{public}@", event, data);
+    DLog("FACETIMEHELPER: Authenticated action received: %{public}@", event);
     
     if ([event isEqualToString:@"answer-call"]) {
         TUCall *call = [[TUCallCenter sharedInstance] callWithCallUUID:(data[@"callUUID"])];

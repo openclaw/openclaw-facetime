@@ -12,6 +12,11 @@ describe("published plugin manifest", () => {
     expect(packageManifest.files).toContain("dist/");
     expect(packageManifest.files).toContain("doctor-contract-api.ts");
     expect(packageManifest.files).toContain("skills/");
+    expect(packageManifest.devDependencies.openclaw).toBe("2026.7.2-beta.3");
+    expect(packageManifest.peerDependencies.openclaw).toBe(">=2026.7.2-beta.4");
+    expect(packageManifest.openclaw.install.minHostVersion).toBe(">=2026.7.2-beta.4");
+    expect(packageManifest.openclaw.compat.pluginApi).toBe(">=2026.7.2-beta.4");
+    expect(packageManifest.openclaw.build.openclawVersion).toBe("2026.7.2-beta.3");
     expect(pluginManifest.skills).toEqual(["./skills"]);
     expect(pluginManifest.contracts.tools).toEqual(["facetime_call"]);
     expect(pluginManifest.configSchema.properties.helperPort).toEqual({ type: "number" });
