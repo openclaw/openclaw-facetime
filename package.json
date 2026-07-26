@@ -1,7 +1,7 @@
 {
   "name": "@openclaw/facetime",
   "version": "2026.5.10-beta.1",
-  "description": "OpenClaw FaceTime voice carrier for Lobster",
+  "description": "Private FaceTime realtime voice carrier for OpenClaw agents",
   "keywords": [
     "facetime",
     "openclaw",

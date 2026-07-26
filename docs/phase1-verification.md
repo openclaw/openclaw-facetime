@@ -4,7 +4,7 @@
 
 - Failure: caller audio reached the model through the old BlackHole path, but model speech did not reliably reach the remote caller.
 - Changed path: the plugin captures FaceTime and Phone audio through a Core Audio process tap and sends model PCM to `OpenClaw-Feed`, which mirrors into `OpenClaw-Mic`.
-- Pass condition: the caller and Lobster hear each other, the remote caller hears the deterministic test phrase, barge-in clears queued speech, the physical Mac speaker stays silent, and all child processes stop after hangup.
+- Pass condition: the caller and configured OpenClaw agent hear each other, the remote caller hears the deterministic test phrase, barge-in clears queued speech, the physical Mac speaker stays silent, and all child processes stop after hangup.
 - Evidence: focused automated tests, signed Swift helper build, paired-driver loopback preflight, then a user-confirmed iPhone round trip through the plugin.
 
 ## Automated proof
@@ -39,7 +39,7 @@ All required checks must pass. At call time, the helper answers with uplink mute
 6. Run `facetime.testAudio` and confirm the iPhone hears the phrase.
 7. Speak from the iPhone and confirm a contextual response.
 8. Ask a tool-backed question and confirm agent consultation.
-9. Interrupt Lobster and confirm queued speech stops promptly.
+9. Interrupt the agent and confirm queued speech stops promptly.
 10. Hang up and verify there is no active call and no capture, SoX, or caffeinate child remains.
 
 ## FaceTime audio acceptance

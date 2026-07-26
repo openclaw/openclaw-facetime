@@ -2,7 +2,10 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-types";
 import { resolveDefaultAgentId } from "openclaw/plugin-sdk/agent-runtime";
 import { abortAgentHarnessRun } from "openclaw/plugin-sdk/agent-harness";
 import type { PluginRuntime, RuntimeLogger } from "openclaw/plugin-sdk/plugin-runtime";
+import { resolveRealtimeBootstrapContextInstructions } from "openclaw/plugin-sdk/realtime-bootstrap-context";
+import * as realtimeVoiceSdk from "openclaw/plugin-sdk/realtime-voice";
 import {
+  buildRealtimeVoiceAgentConsultPolicyInstructions,
   buildRealtimeVoiceAgentCancelProviderResult,
   buildRealtimeVoiceAgentConsultWorkingResponse,
   consultRealtimeVoiceAgent,
@@ -38,13 +41,25 @@ export type FaceTimeTalkDriver = {
 };
 
 type TranscriptEntry = { role: "user" | "assistant"; text: string };
+type AuthenticatedOwnerConsultParams = Parameters<typeof consultRealtimeVoiceAgent>[0] & {
+  senderId: string;
+  senderIsOwner: true;
+};
+type SenderAuthCapableRealtimeVoiceSdk = {
+  REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION?: unknown;
+};
 
 const CONSULT_SYSTEM_PROMPT = [
-  "You are Lobster's main agent being consulted from a private 1:1 FaceTime voice call.",
-  "Act on behalf of Omar with normal memory and tool access.",
+  "You are the configured OpenClaw agent receiving a delegated request from an authenticated owner in a private 1:1 FaceTime call.",
+  "Use the normal workspace, memory, tools, and approval policies for this agent.",
+  "Prefer registered OpenClaw tools over exec.",
+  "Never claim completion unless the relevant tool result confirms it.",
   "Return a concise, speakable answer suitable for realtime TTS.",
 ].join(" ");
 const INPUT_AUDIO_STATUS_INTERVAL_MS = 1000;
+// FaceTime carries audio but is not an OpenClaw message channel. Approval
+// followups validate this field, so use the always-registered internal channel.
+const AGENT_CONSULT_MESSAGE_PROVIDER = "webchat";
 
 function pushRecent(events: TalkEvent[], event: TalkEvent | undefined): void {
   if (!event) {
@@ -56,6 +71,16 @@ function pushRecent(events: TalkEvent[], event: TalkEvent | undefined): void {
   }
 }
 
+function assertAuthenticatedSenderConsultSupport(): void {
+  const version = (realtimeVoiceSdk as SenderAuthCapableRealtimeVoiceSdk)
+    .REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION;
+  if (version !== 1) {
+    throw new Error(
+      "OpenClaw host does not support authenticated sender identity for realtime agent consults; update OpenClaw before enabling FaceTime",
+    );
+  }
+}
+
 function agentIdFromSessionKey(sessionKey: string, config: OpenClawConfig): string {
   const normalized = sessionKey.trim();
   if (normalized.startsWith("agent:")) {
@@ -64,14 +89,32 @@ function agentIdFromSessionKey(sessionKey: string, config: OpenClawConfig): stri
   return resolveDefaultAgentId(config);
 }
 
-const REQUIRED_AGENT_CONSULT_INSTRUCTIONS = [
-  "You are the FaceTime voice interface for the authoritative Lobster OpenClaw agent, not a separate source of personal or workspace knowledge.",
-  `Before answering any question about identity, personality, the caller or owner, SOUL.md, USER.md, memory, workspace files, tools, or current OpenClaw status or configuration, you MUST call ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} and use its result.`,
-  "Never claim that those resources are unavailable from this call. Consult the Lobster agent instead.",
-].join(" ");
-
-function buildRealtimeInstructions(instructions: string | undefined): string {
-  return [instructions?.trim(), REQUIRED_AGENT_CONSULT_INSTRUCTIONS].filter(Boolean).join("\n\n");
+function buildRealtimeInstructions(params: {
+  instructions: string | undefined;
+  bootstrapContext: string | undefined;
+  toolPolicy: FaceTimeConfig["realtime"]["toolPolicy"];
+}): string {
+  const proxyInstructions =
+    params.toolPolicy === "none"
+      ? undefined
+      : [
+          "Mode: OpenClaw agent proxy.",
+          "You are the realtime voice surface for the same configured OpenClaw agent the owner can message directly.",
+          "Do not mention a backend, supervisor, helper, or separate system. Present the result as your own work.",
+          `Delegate substantive requests, actions, tool work, current facts, memory, workspace context, identity, persona, and user-specific context with ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME}.`,
+          "Do not block, refuse, or downscope at the voice layer. Delegate to OpenClaw and treat its result as authoritative.",
+          'While waiting for a tool result, use at most one short natural backchannel such as "one sec"; do not repeat progress updates or treat it as the final answer.',
+          "Never claim you retried or are retrying unless a new tool result explicitly confirms a new attempt.",
+          buildRealtimeVoiceAgentConsultPolicyInstructions({
+            toolPolicy: params.toolPolicy,
+            consultPolicy: "always",
+          }),
+        ]
+          .filter(Boolean)
+          .join("\n");
+  return [params.instructions?.trim(), params.bootstrapContext?.trim(), proxyInstructions]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 async function resolveRealtimeProviderConfigs(params: {
@@ -103,6 +146,8 @@ export async function startFaceTimeTalkDriver(params: {
   runtime: PluginRuntime;
   logger: RuntimeLogger;
   callUUID: string;
+  senderId: string;
+  senderIsOwner: true;
   captureBinary: string;
   signal?: AbortSignal;
   onFailure?: (error: Error) => boolean | Promise<boolean>;
@@ -110,6 +155,9 @@ export async function startFaceTimeTalkDriver(params: {
   if (params.signal?.aborted) {
     throw new Error("FaceTime talk startup aborted");
   }
+  // Fail closed before the call is answered; older hosts silently ignore the
+  // owner fields and would otherwise create a privilege-downgrade footgun.
+  assertAuthenticatedSenderConsultSupport();
   const providerConfigs = await resolveRealtimeProviderConfigs({
     config: params.config,
     fullConfig: params.fullConfig,
@@ -131,7 +179,25 @@ export async function startFaceTimeTalkDriver(params: {
     params.config.realtime.sessionKey,
     params.fullConfig,
   );
-  const consultSessionKey = `agent:${consultAgentId}:facetime:${params.callUUID}`;
+  const normalizedCallUUID = params.callUUID.trim().toLowerCase();
+  const consultSessionKey = `agent:${consultAgentId}:facetime:${normalizedCallUUID}`;
+  const requesterSessionKey = params.config.realtime.sessionKey.startsWith("agent:")
+    ? params.config.realtime.sessionKey
+    : `agent:${consultAgentId}:${params.config.realtime.sessionKey}`;
+  let bootstrapContext: string | undefined;
+  try {
+    bootstrapContext = await resolveRealtimeBootstrapContextInstructions({
+      config: params.fullConfig,
+      agentId: consultAgentId,
+      sessionKey: requesterSessionKey,
+      warn: (message) =>
+        params.logger.warn?.(`[facetime] realtime bootstrap context: ${message}`),
+    });
+  } catch (error) {
+    params.logger.warn?.(
+      `[facetime] realtime bootstrap context unavailable: ${formatErrorMessage(error)}`,
+    );
+  }
   const talk = createTalkSessionController(
     {
       sessionId: `facetime:${params.callUUID}`,
@@ -376,22 +442,28 @@ export async function startFaceTimeTalkDriver(params: {
         willContinue: true,
       });
     }
-    void consultRealtimeVoiceAgent({
+    // Keep compatibility with hosts whose declarations predate these additive
+    // fields; updated OpenClaw runtimes forward both into runEmbeddedAgent.
+    void (consultRealtimeVoiceAgent as (params: AuthenticatedOwnerConsultParams) => Promise<{
+      text: string;
+    }>)({
       cfg: params.fullConfig,
       agentRuntime: params.runtime.agent,
       logger: params.logger,
       agentId: consultAgentId,
       sessionKey: consultSessionKey,
-      spawnedBy: params.config.realtime.sessionKey,
+      spawnedBy: requesterSessionKey,
+      senderId: params.senderId,
+      senderIsOwner: params.senderIsOwner,
       contextMode: "fork",
-      messageProvider: "facetime",
-      lane: `facetime:${params.callUUID}`,
-      runIdPrefix: `facetime:${params.callUUID}`,
+      messageProvider: AGENT_CONSULT_MESSAGE_PROVIDER,
+      lane: `facetime:${normalizedCallUUID}`,
+      runIdPrefix: `facetime:${normalizedCallUUID}`,
       args: event.args,
       transcript,
       surface: "a private FaceTime call",
       userLabel: "Caller",
-      assistantLabel: "Lobster",
+      assistantLabel: "Assistant",
       questionSourceLabel: "caller",
       toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow(params.config.realtime.toolPolicy),
       extraSystemPrompt: CONSULT_SYSTEM_PROMPT,
@@ -418,6 +490,7 @@ export async function startFaceTimeTalkDriver(params: {
         }
         pendingAgentConsults.delete(callId);
         const message = formatErrorMessage(error);
+        params.logger.warn?.(`[facetime] agent consult failed: ${message}`);
         remember({
           type: "tool.error",
           turnId,
@@ -488,7 +561,11 @@ export async function startFaceTimeTalkDriver(params: {
       audioFormat: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
       // Configured voice/personality instructions remain customizable, but the
       // authoritative-agent boundary must not disappear when they are replaced.
-      instructions: buildRealtimeInstructions(params.config.realtime.instructions),
+      instructions: buildRealtimeInstructions({
+        instructions: params.config.realtime.instructions,
+        bootstrapContext,
+        toolPolicy: params.config.realtime.toolPolicy,
+      }),
       autoRespondToAudio: true,
       triggerGreetingOnReady: false,
       initialGreetingInstructions: "Greet the caller briefly and say you are listening.",

@@ -8,6 +8,7 @@ import {
   isWhitelistedFaceTimeCall,
   normalizeFaceTimeCallEvent,
   normalizeFaceTimeHandle,
+  resolveAllowlistedFaceTimeOwner,
 } from "../src/call-events.js";
 
 describe("FaceTime call events", () => {
@@ -73,6 +74,53 @@ describe("FaceTime call events", () => {
         whitelistHandles: ["omar@example.com"],
       }),
     ).toBe(true);
+    expect(
+      resolveAllowlistedFaceTimeOwner({
+        event: event!,
+        whitelistHandles: ["omar@example.com"],
+      }),
+    ).toEqual({ senderId: "omar@example.com", senderIsOwner: true });
+  });
+
+  it("does not grant owner authority outside the FaceTime allowlist", () => {
+    const event = normalizeFaceTimeCallEvent({
+      event: "ft-call-status-changed",
+      data: {
+        call_uuid: "call-1",
+        call_status: 4,
+        is_outgoing: false,
+        handle: { value: "stranger@example.com" },
+      },
+    });
+
+    expect(
+      resolveAllowlistedFaceTimeOwner({
+        event: event!,
+        whitelistHandles: ["owner@example.com"],
+      }),
+    ).toBeUndefined();
+  });
+
+  it("uses the exact allowlisted candidate as the authenticated sender", () => {
+    const event = normalizeFaceTimeCallEvent({
+      event: "ft-call-status-changed",
+      data: {
+        call_uuid: "call-1",
+        call_status: 4,
+        is_outgoing: false,
+        handle: {
+          value: "display@example.com",
+          normalized: { value: "MAILTO:owner@example.com" },
+        },
+      },
+    });
+
+    expect(
+      resolveAllowlistedFaceTimeOwner({
+        event: event!,
+        whitelistHandles: ["owner@example.com"],
+      }),
+    ).toEqual({ senderId: "owner@example.com", senderIsOwner: true });
   });
 
   it("ignores country codes and searches nested handle dictionaries", () => {

@@ -27,9 +27,8 @@ export type FaceTimeConfig = {
 const HELPER_BASE_PORT = 45670;
 
 const DEFAULT_INSTRUCTIONS = [
-  "You are Lobster speaking through a private 1:1 FaceTime call.",
+  "You are the realtime voice surface for the configured OpenClaw agent during a private 1:1 FaceTime call.",
   "Keep replies concise, natural, and useful for a hands-free voice conversation.",
-  `Use ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} when the caller asks for memory, tools, current status, or work that should run in the main Lobster agent session.`,
 ].join(" ");
 
 function asRecord(value: unknown): Record<string, unknown> {

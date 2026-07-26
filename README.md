@@ -1,6 +1,6 @@
 # OpenClaw FaceTime
 
-This repository is the canonical FaceTime voice plugin for OpenClaw and Lobster.
+This repository is the canonical FaceTime voice plugin for OpenClaw agents.
 
 It combines call control, OpenClaw agent consultation, and the audio path proven on current macOS:
 
@@ -37,7 +37,7 @@ Build and sign the Core Audio process-tap helper:
 pnpm build:capture
 ```
 
-OpenClaw installs npm plugins with lifecycle scripts disabled. On first plugin activation, the plugin checks for this helper and builds it from the packaged Swift source when missing. Xcode must therefore remain installed on the Lobster Mac. The explicit command above is useful for setup verification and development.
+OpenClaw installs npm plugins with lifecycle scripts disabled. On first plugin activation, the plugin checks for this helper and builds it from the packaged Swift source when missing. Xcode must therefore remain installed on the OpenClaw Mac. The explicit command above is useful for setup verification and development.
 
 Install the pinned BlackHole v0.7.1 source as the paired OpenClaw driver:
 
@@ -138,7 +138,16 @@ macOS.
 
 ## Configure OpenClaw
 
-The plugin must be installed, allowlisted, enabled, and given at least one allowed FaceTime handle. Its Realtime provider defaults to OpenAI `gpt-realtime-2.1` with the `marin` voice.
+The plugin must be installed, allowlisted, enabled, and given at least one owner
+FaceTime handle. Every entry in `whitelistHandles` is an authenticated owner,
+not a guest caller: admitted calls inherit owner authorization and the
+configured agent's normal workspace, memory, tools, and approval policies. Do
+not add a handle that should have reduced privileges.
+
+The realtime voice layer derives its identity and persona from the configured
+agent's `IDENTITY.md`, `USER.md`, and `SOUL.md`; the delegated agent turn also
+loads the normal full workspace context. The Realtime provider defaults to
+OpenAI `gpt-realtime-2.1` with the `marin` voice.
 
 Older local builds used `plugins.entries.facetime.config.audio` for duplex BlackHole routing. That property is retired. Migrate it once with:
 

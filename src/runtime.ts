@@ -10,9 +10,12 @@ import {
   isIncomingRingingCall,
   isOutgoingRingingCall,
   isWhitelistedFaceTimeCall,
+  canonicalizeFaceTimeHandle,
   normalizeFaceTimeCallEvent,
   normalizeFaceTimeHandle,
   normalizeFaceTimeHandleCandidates,
+  resolveAllowlistedFaceTimeOwner,
+  type AuthenticatedFaceTimeOwner,
   type FaceTimeCallStatusEvent,
 } from "./call-events.js";
 import { resolveFaceTimeConfig, validateFaceTimeConfig, type FaceTimeConfig } from "./config.js";
@@ -52,6 +55,9 @@ type ActiveFaceTimeCall = {
   callUUID: string;
   callUUIDAliases?: Set<string>;
   lifecycleAbort: AbortController;
+  /** Verified at the FaceTime allowlist or authorized outbound-dial boundary. */
+  senderId: string;
+  senderIsOwner: true;
   handle?: string;
   callStatus?: number;
   isSendingAudio?: boolean;
@@ -96,6 +102,14 @@ const OUTBOUND_DIAL_HELPER_BUNDLES = new Set([
   "com.apple.FaceTime",
   "com.apple.FaceTime.FTConversationService",
 ]);
+
+function resolveAuthorizedOutboundOwner(
+  pending: PendingFaceTimeDial,
+): AuthenticatedFaceTimeOwner {
+  // Pending dials are created only by resolveFaceTimeDialRequest, which rejects
+  // handles outside whitelistHandles before native dialing starts.
+  return { senderId: canonicalizeFaceTimeHandle(pending.handle), senderIsOwner: true };
+}
 
 export type FaceTimeRuntimeStatus = {
   enabled: true;
@@ -674,6 +688,8 @@ export async function createFaceTimeRuntime(params: {
           runtime: params.runtime,
           logger: params.logger,
           callUUID,
+          senderId: call.senderId,
+          senderIsOwner: call.senderIsOwner,
           captureBinary,
           signal: call.lifecycleAbort.signal,
           async onFailure(error) {
@@ -761,7 +777,10 @@ export async function createFaceTimeRuntime(params: {
     }
   };
 
-  const answerIncomingCall = async (event: FaceTimeCallStatusEvent) => {
+  const answerIncomingCall = async (
+    event: FaceTimeCallStatusEvent,
+    owner: AuthenticatedFaceTimeOwner,
+  ) => {
     const callUUID = readCallUUID(event);
     if (driverInstallPending) {
       params.logger.warn(
@@ -782,6 +801,7 @@ export async function createFaceTimeRuntime(params: {
     const handle = normalizeFaceTimeHandle(event.data.handle);
     const call: ActiveFaceTimeCall = {
       callUUID,
+      ...owner,
       handle,
       lifecycleAbort: new AbortController(),
       audioReady: false,
@@ -814,7 +834,10 @@ export async function createFaceTimeRuntime(params: {
     }
   };
 
-  const activateCall = async (event: FaceTimeCallStatusEvent) => {
+  const activateCall = async (
+    event: FaceTimeCallStatusEvent,
+    owner?: AuthenticatedFaceTimeOwner,
+  ) => {
     const callUUID = readCallUUID(event);
     if (driverInstallPending) {
       params.logger.warn(
@@ -824,6 +847,10 @@ export async function createFaceTimeRuntime(params: {
     }
     let call = calls.get(callUUID);
     if (!call) {
+      if (!owner) {
+        params.logger.warn(`[facetime] refused active call without authenticated owner: ${callUUID}`);
+        return;
+      }
       if (calls.size > 0) {
         params.logger.warn(
           `[facetime] ignored active call ${callUUID}; another FaceTime bridge is active`,
@@ -832,6 +859,7 @@ export async function createFaceTimeRuntime(params: {
       }
       call = {
         callUUID,
+        ...owner,
         handle: normalizeFaceTimeHandle(event.data.handle),
         lifecycleAbort: new AbortController(),
         audioReady: false,
@@ -866,8 +894,12 @@ export async function createFaceTimeRuntime(params: {
     const handleForLog =
       normalizeFaceTimeHandleCandidates(event.data.handle).join(", ") || "unknown";
     if (isIncomingRingingCall(event)) {
-      if (isWhitelistedFaceTimeCall({ event, whitelistHandles: config.whitelistHandles })) {
-        await answerIncomingCall(event);
+      const owner = resolveAllowlistedFaceTimeOwner({
+        event,
+        whitelistHandles: config.whitelistHandles,
+      });
+      if (owner) {
+        await answerIncomingCall(event, owner);
       } else {
         params.logger.info(
           `[facetime] ignored non-whitelisted FaceTime call: ${callUUID} handle=${handleForLog}`,
@@ -891,18 +923,22 @@ export async function createFaceTimeRuntime(params: {
         doesFaceTimeCallMatchPendingDial({ event, pending: outboundCallPending })
           ? outboundCallPending
           : undefined;
-      const isAuthorizedOutboundCall = Boolean(authorizedPending);
+      const owner = authorizedPending
+        ? resolveAuthorizedOutboundOwner(authorizedPending)
+        : resolveAllowlistedFaceTimeOwner({
+            event,
+            whitelistHandles: config.whitelistHandles,
+          });
       if (
         !calls.has(callUUID) &&
-        !isAuthorizedOutboundCall &&
-        !isWhitelistedFaceTimeCall({ event, whitelistHandles: config.whitelistHandles })
+        !owner
       ) {
         params.logger.info(
           `[facetime] ignored active non-whitelisted FaceTime call: ${callUUID} handle=${handleForLog}`,
         );
         return;
       }
-      await activateCall(event);
+      await activateCall(event, owner);
       if (authorizedPending && outboundCallPending === authorizedPending && calls.has(callUUID)) {
         const activeCall = calls.get(callUUID);
         if (activeCall && authorizedPending.callUUIDAliases) {

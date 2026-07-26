@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => ({
   },
   createSession: vi.fn(),
   consult: vi.fn(),
+  resolveBootstrapContext: vi.fn(),
+  senderAuthVersion: 1 as number | undefined,
   pump: {
     suppressionReady: vi.fn(async () => {}),
     routeReady: vi.fn(async () => {}),
@@ -39,6 +41,10 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
+  get REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION() {
+    return mocks.senderAuthVersion;
+  },
+  buildRealtimeVoiceAgentConsultPolicyInstructions: vi.fn(() => "Consult behavior: always."),
   buildRealtimeVoiceAgentCancelProviderResult: mocks.buildCancelResult,
   buildRealtimeVoiceAgentConsultWorkingResponse: vi.fn(),
   consultRealtimeVoiceAgent: mocks.consult,
@@ -60,6 +66,10 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
   })),
   resolveRealtimeVoiceAgentConsultTools: vi.fn(() => []),
   resolveRealtimeVoiceAgentConsultToolsAllow: vi.fn(() => []),
+}));
+
+vi.mock("openclaw/plugin-sdk/realtime-bootstrap-context", () => ({
+  resolveRealtimeBootstrapContextInstructions: mocks.resolveBootstrapContext,
 }));
 
 vi.mock("openclaw/plugin-sdk/agent-runtime", () => ({
@@ -103,6 +113,8 @@ function startParams(overrides: Record<string, unknown> = {}) {
     } as any,
     logger: console,
     callUUID: "call-1",
+    senderId: "caller@example.com",
+    senderIsOwner: true,
     captureBinary: "/capture",
     ...overrides,
   };
@@ -111,6 +123,8 @@ function startParams(overrides: Record<string, unknown> = {}) {
 describe("FaceTime talk driver lifecycle", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.senderAuthVersion = 1;
+    mocks.resolveBootstrapContext.mockResolvedValue(undefined);
     mocks.pumpParams = undefined;
     mocks.sessionParams = undefined;
     mocks.bridge.bridge.supportsToolResultContinuation = false;
@@ -134,6 +148,16 @@ describe("FaceTime talk driver lifecycle", () => {
     await expect(starting).rejects.toThrow("startup aborted");
     expect(mocks.bridge.close).toHaveBeenCalledOnce();
     expect(mocks.pump.stop).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed when OpenClaw cannot forward authenticated sender identity", async () => {
+    mocks.senderAuthVersion = undefined;
+
+    await expect(startFaceTimeTalkDriver(startParams())).rejects.toThrow(
+      "does not support authenticated sender identity",
+    );
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(mocks.pump.stop).not.toHaveBeenCalled();
   });
 
   it("reports an audio-child failure to the owning runtime", async () => {
@@ -387,16 +411,52 @@ describe("FaceTime talk driver lifecycle", () => {
         expect.objectContaining({
           agentId: "lobster",
           sessionKey: "agent:lobster:facetime:call-1",
-          spawnedBy: "main",
+          spawnedBy: "agent:lobster:main",
           contextMode: "fork",
+          senderId: "caller@example.com",
+          senderIsOwner: true,
+          messageProvider: "webchat",
           lane: "facetime:call-1",
         }),
       ),
     );
   });
 
-  it("requires custom voice instructions to consult Lobster for SOUL and identity", async () => {
+  it("normalizes FaceTime UUID casing for one consult session and lane", async () => {
     mocks.bridge.connect.mockResolvedValue();
+    mocks.consult.mockResolvedValueOnce({ text: "Done." });
+    await startFaceTimeTalkDriver(
+      startParams({
+        callUUID: "17BC43FD-5800-4B54-86DB-698C49253C42",
+        fullConfig: {
+          agents: { list: [{ id: "lobster", default: true }] },
+        },
+      }),
+    );
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Check my calendar." },
+    });
+
+    await vi.waitFor(() =>
+      expect(mocks.consult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionKey: "agent:lobster:facetime:17bc43fd-5800-4b54-86db-698c49253c42",
+          lane: "facetime:17bc43fd-5800-4b54-86db-698c49253c42",
+          runIdPrefix: "facetime:17bc43fd-5800-4b54-86db-698c49253c42",
+        }),
+      ),
+    );
+  });
+
+  it("combines custom instructions with workspace identity and agent proxy policy", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    mocks.resolveBootstrapContext.mockResolvedValue(
+      "OpenClaw realtime voice profile context:\n\n### IDENTITY.md\nName: Tide",
+    );
     await startFaceTimeTalkDriver(
       startParams({
         config: resolveFaceTimeConfig({
@@ -407,7 +467,11 @@ describe("FaceTime talk driver lifecycle", () => {
     );
 
     expect(mocks.sessionParams?.instructions).toContain("Speak warmly and keep answers short.");
-    expect(mocks.sessionParams?.instructions).toContain("SOUL.md");
-    expect(mocks.sessionParams?.instructions).toContain("MUST call openclaw_agent_consult");
+    expect(mocks.sessionParams?.instructions).toContain("Name: Tide");
+    expect(mocks.sessionParams?.instructions).toContain("same configured OpenClaw agent");
+    expect(mocks.sessionParams?.instructions).toContain("Consult behavior: always.");
+    expect(mocks.sessionParams?.instructions).toContain("Never claim you retried");
+    expect(mocks.sessionParams?.instructions).not.toContain("Lobster");
+    expect(mocks.sessionParams?.instructions).not.toContain("Omar");
   });
 });

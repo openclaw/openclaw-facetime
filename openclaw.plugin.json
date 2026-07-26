@@ -1,7 +1,7 @@
 {
   "id": "facetime",
   "name": "FaceTime",
-  "description": "Private FaceTime realtime voice carrier for Lobster",
+  "description": "Private FaceTime realtime voice carrier for OpenClaw agents",
   "version": "2026.5.10-beta.1",
   "activation": {
     "onStartup": true
@@ -52,13 +52,13 @@
     "helperHost": { "label": "Helper Host", "advanced": true },
     "helperPort": { "label": "Helper Port", "advanced": true },
     "whitelistHandles": {
-      "label": "Allowed FaceTime Handles",
-      "help": "Incoming calls are auto-answered and outbound calls are allowed only for these handles."
+      "label": "Owner FaceTime Handles",
+      "help": "Only these handles may place or receive bridged calls. Every listed handle receives authenticated owner privileges."
     },
     "realtime.provider": { "label": "Realtime Provider", "advanced": true },
     "realtime.model": { "label": "Realtime Model", "advanced": true },
     "realtime.voice": { "label": "Realtime Voice", "advanced": true },
-    "realtime.sessionKey": { "label": "Lobster Session Key", "advanced": true },
+    "realtime.sessionKey": { "label": "Agent Session Key", "advanced": true },
     "realtime.brain": { "label": "Brain Mode", "advanced": true },
     "realtime.toolPolicy": { "label": "Tool Policy", "advanced": true }
   }

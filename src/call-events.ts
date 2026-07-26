@@ -29,6 +29,11 @@ export type FaceTimeCallStatusData = {
   remote_meter_level?: unknown;
 };
 
+export type AuthenticatedFaceTimeOwner = {
+  senderId: string;
+  senderIsOwner: true;
+};
+
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -170,6 +175,22 @@ export function isWhitelistedFaceTimeCall(params: {
     const canonicalEntry = canonicalizeFaceTimeHandle(entry);
     return canonicalHandles.has(canonicalEntry);
   });
+}
+
+export function resolveAllowlistedFaceTimeOwner(params: {
+  event: FaceTimeCallStatusEvent;
+  whitelistHandles: readonly string[];
+}): AuthenticatedFaceTimeOwner | undefined {
+  const allowlistedHandles = new Set(
+    params.whitelistHandles.map(canonicalizeFaceTimeHandle).filter(Boolean),
+  );
+  const senderId = normalizeFaceTimeHandleCandidates(params.event.data.handle)
+    .map(canonicalizeFaceTimeHandle)
+    .find((candidate) => allowlistedHandles.has(candidate));
+  if (!senderId) {
+    return undefined;
+  }
+  return { senderId, senderIsOwner: true };
 }
 
 export function doesFaceTimeCallMatchHandle(params: {
