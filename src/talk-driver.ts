@@ -340,7 +340,9 @@ export async function startFaceTimeTalkDriver(params: {
       },
     );
     // Session creation and run registration are asynchronous. Keep looking
-    // until the cancelled backend settles or the owning FaceTime call closes.
+    // until the cancelled backend settles. Unref each retry so a provider that
+    // never settles cannot keep gateway shutdown alive.
+    let retryDelayMs = 25;
     while (pending.cancelRequested && !pending.backendSettled) {
       try {
         const sessionEntry = params.runtime.agent.session.getSessionEntry({
@@ -357,7 +359,11 @@ export async function startFaceTimeTalkDriver(params: {
           `[facetime] agent consult abort lookup retry: ${formatErrorMessage(error)}`,
         );
       }
-      await new Promise<void>((resolve) => setTimeout(resolve, 25));
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, retryDelayMs);
+        timer.unref?.();
+      });
+      retryDelayMs = Math.min(retryDelayMs * 2, 1_000);
     }
   };
   function abortPendingAgentConsultsForClose() {

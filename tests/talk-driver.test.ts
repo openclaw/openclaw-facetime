@@ -289,6 +289,34 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.bridge.submitToolResult).not.toHaveBeenCalled();
   });
 
+  it("does not keep gateway shutdown alive while waiting for late consult registration", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    mocks.consult.mockImplementationOnce(() => new Promise<{ text: string }>(() => {}));
+    const params = startParams();
+    params.runtime.agent.session.getSessionEntry.mockReturnValue(undefined);
+    const driver = await startFaceTimeTalkDriver(params);
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Change my calendar." },
+    });
+    await vi.waitFor(() => expect(mocks.consult).toHaveBeenCalledOnce());
+
+    const unref = vi.fn();
+    const timer = { unref } as unknown as ReturnType<typeof setTimeout>;
+    const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout").mockReturnValueOnce(timer);
+    try {
+      await driver.close("carrier-ended");
+      await vi.waitFor(() => expect(unref).toHaveBeenCalledOnce());
+    } finally {
+      setTimeoutSpy.mockRestore();
+    }
+
+    expect(mocks.abortAgentRun).not.toHaveBeenCalled();
+  });
+
   it("silently closes a consult superseded by new caller speech", async () => {
     mocks.bridge.connect.mockResolvedValue();
     let finishConsult = (_result: { text: string }) => {};
