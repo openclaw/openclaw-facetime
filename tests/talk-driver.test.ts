@@ -260,6 +260,35 @@ describe("FaceTime talk driver lifecycle", () => {
     expect(mocks.bridge.close).toHaveBeenCalledOnce();
   });
 
+  it("aborts a pending agent consult when the FaceTime call closes", async () => {
+    mocks.bridge.connect.mockResolvedValue();
+    let finishConsult = (_result: { text: string }) => {};
+    mocks.consult.mockImplementationOnce(
+      () =>
+        new Promise<{ text: string }>((resolve) => {
+          finishConsult = resolve;
+        }),
+    );
+    const driver = await startFaceTimeTalkDriver(startParams());
+
+    mocks.sessionParams?.onToolCall({
+      itemId: "item-1",
+      callId: "call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "Change my calendar." },
+    });
+    await vi.waitFor(() => expect(mocks.consult).toHaveBeenCalledOnce());
+
+    await driver.close("carrier-ended");
+
+    await vi.waitFor(() =>
+      expect(mocks.abortAgentRun).toHaveBeenCalledWith("facetime-consult-session"),
+    );
+    finishConsult({ text: "Too late." });
+    await Promise.resolve();
+    expect(mocks.bridge.submitToolResult).not.toHaveBeenCalled();
+  });
+
   it("silently closes a consult superseded by new caller speech", async () => {
     mocks.bridge.connect.mockResolvedValue();
     let finishConsult = (_result: { text: string }) => {};

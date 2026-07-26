@@ -267,6 +267,7 @@ export async function startFaceTimeTalkDriver(params: {
       return await closePromise;
     }
     stopped = true;
+    abortPendingAgentConsultsForClose();
     closePromise = (async () => {
       try {
         bridge?.close();
@@ -340,7 +341,7 @@ export async function startFaceTimeTalkDriver(params: {
     );
     // Session creation and run registration are asynchronous. Keep looking
     // until the cancelled backend settles or the owning FaceTime call closes.
-    while (pending.cancelRequested && !pending.backendSettled && !stopped) {
+    while (pending.cancelRequested && !pending.backendSettled) {
       try {
         const sessionEntry = params.runtime.agent.session.getSessionEntry({
           storePath,
@@ -359,6 +360,13 @@ export async function startFaceTimeTalkDriver(params: {
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
   };
+  function abortPendingAgentConsultsForClose() {
+    for (const pending of pendingAgentConsults.values()) {
+      pending.cancelRequested = true;
+      pendingAgentConsults.delete(pending.callId);
+      void abortPendingAgentConsult(pending);
+    }
+  }
   const cancelPendingAgentConsults = () => {
     for (const pending of pendingAgentConsults.values()) {
       if (pending.cancelRequested) {

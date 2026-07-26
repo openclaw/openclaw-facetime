@@ -1271,7 +1271,6 @@ export async function createFaceTimeRuntime(params: {
     },
     async stop() {
       stopping = true;
-      helperSupervisor?.stop();
       driverInstallAbortController?.abort();
       await driverInstallTask;
       let cleanupError: Error | undefined;
@@ -1293,9 +1292,12 @@ export async function createFaceTimeRuntime(params: {
         }
       }
       if (cleanupError) {
+        // The retained audio safety bridge still needs helper reinjection to
+        // mute or hang up the carrier on a later retry.
         stopping = false;
         throw cleanupError;
       }
+      helperSupervisor?.stop();
       await helper.stop();
     },
   };

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,7 +20,15 @@ describe("FaceTime helper action authentication", () => {
       ]);
       expect(() => execFileSync(binary)).not.toThrow();
     } finally {
-      execFileSync("/usr/bin/trash", [outputDir]);
+      if (existsSync("/usr/bin/trash")) {
+        execFileSync("/usr/bin/trash", [outputDir]);
+      } else {
+        execFileSync("/usr/bin/python3", [
+          "-c",
+          "import shutil, sys; shutil.rmtree(sys.argv[1])",
+          outputDir,
+        ]);
+      }
     }
   });
 });
