@@ -19,6 +19,7 @@
     "native/Package.swift",
     "native/Sources/",
     "scripts/",
+    "skills/",
     "doctor-contract-api.ts",
     "README.md",
     "openclaw.plugin.json"

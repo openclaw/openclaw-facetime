@@ -11,6 +11,9 @@ describe("published plugin manifest", () => {
     expect(packageManifest.scripts.prepack).toBe("pnpm build");
     expect(packageManifest.files).toContain("dist/");
     expect(packageManifest.files).toContain("doctor-contract-api.ts");
+    expect(packageManifest.files).toContain("skills/");
+    expect(pluginManifest.skills).toEqual(["./skills"]);
+    expect(pluginManifest.contracts.tools).toEqual(["facetime_call"]);
     expect(pluginManifest.configSchema.properties.helperPort).toEqual({ type: "number" });
   });
 });

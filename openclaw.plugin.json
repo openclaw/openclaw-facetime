@@ -6,8 +6,9 @@
   "activation": {
     "onStartup": true
   },
+  "skills": ["./skills"],
   "contracts": {
-    "tools": []
+    "tools": ["facetime_call"]
   },
   "configSchema": {
     "type": "object",

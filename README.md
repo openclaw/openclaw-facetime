@@ -274,6 +274,37 @@ Hang up through OpenClaw:
 openclaw gateway call facetime.hangup --json
 ```
 
+## Agent tool and skill
+
+The plugin bundles a `facetime` skill and registers the `facetime_call` tool so
+OpenClaw agents can inspect readiness and manage calls without shell commands.
+The available actions are:
+
+- `get_status`
+- `check_readiness`
+- `initiate_call`
+- `end_call`
+
+Outbound calls require an allowlisted handle and a trusted, one-shot OpenClaw
+plugin approval. Persistent approval is intentionally unavailable. Driver
+installation, SIP changes, FaceTime sign-in, TCC permissions, and System
+Settings remain operator-only.
+
+Agents using a restrictive tool profile must also allow the tool explicitly:
+
+```json5
+{
+  agents: {
+    list: [
+      {
+        id: "main",
+        tools: { alsoAllow: ["facetime_call"] },
+      },
+    ],
+  },
+}
+```
+
 ## Development checks
 
 ```sh

@@ -18,6 +18,7 @@ import {
 } from "./src/config.js";
 import { resolvePluginRoot } from "./src/plugin-paths.js";
 import { runFaceTimeSetup } from "./src/setup.js";
+import { createFaceTimeCallTool, resolveFaceTimeToolApproval } from "./src/tool.js";
 
 const faceTimeConfigSchema = {
   parse(value: unknown): FaceTimeConfig {
@@ -67,6 +68,16 @@ const faceTimePlugin: OpenClawPluginDefinition = definePluginEntry({
       });
       return await runtimePromise;
     };
+
+    api.registerTool(() => createFaceTimeCallTool({ ensureRuntime }), {
+      name: "facetime_call",
+    });
+    api.on("before_tool_call", (event) => {
+      if (event.toolName !== "facetime_call") {
+        return;
+      }
+      return resolveFaceTimeToolApproval(event.params);
+    });
 
     api.registerService({
       id: "facetime-runtime",
