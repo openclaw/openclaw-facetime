@@ -88,6 +88,45 @@ describe("FaceTime audio pump", () => {
     expect(onInputAudio).toHaveBeenCalledWith(Buffer.from([1, 2, 3]));
   });
 
+  it("starts the microphone-route deadline only when post-answer readiness begins", async () => {
+    vi.useFakeTimers();
+    try {
+      const processes: FakeProcess[] = [];
+      const pump = startFaceTimeAudioPump({
+        captureBinary: "/capture",
+        logger: console,
+        onInputAudio() {},
+        onError: vi.fn(async () => false),
+        spawn: vi.fn(() => {
+          const process = new FakeProcess();
+          processes.push(process);
+          return process;
+        }),
+      });
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      processes[1]?.stderr.emit(
+        "data",
+        "facetime-audio-capture: started FaceTime process tap\n",
+      );
+      await pump.suppressionReady();
+
+      const routeReady = pump.routeReady();
+      await vi.advanceTimersByTimeAsync(14_999);
+      processes[1]?.stderr.emit(
+        "data",
+        "facetime-audio-capture: verified OpenClaw-Mic input route\n",
+      );
+      await expect(routeReady).resolves.toBeUndefined();
+
+      const stopped = pump.stop();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await stopped;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("writes output, clears queued playback, and stops every child", async () => {
     vi.useFakeTimers();
     try {

@@ -222,6 +222,28 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
+  it("does not answer after helper control is lost during suppression startup", async () => {
+    let releaseSuppression = () => {};
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockImplementationOnce(
+      () => new Promise<typeof talk>((resolve) => (releaseSuppression = () => resolve(talk))),
+    );
+    mocks.helper.leaveCall.mockRejectedValueOnce(new Error("helper unavailable"));
+    const runtime = await createRuntime();
+
+    mocks.helperParams?.onMessage(incomingCall());
+    await vi.waitFor(() => expect(mocks.startTalk).toHaveBeenCalledOnce());
+    mocks.helperParams?.onDisconnect("com.apple.FaceTime");
+    await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledWith("call-1"));
+    releaseSuppression();
+    await vi.waitFor(async () => {
+      expect((await runtime.status()).calls).toEqual([]);
+    });
+
+    expect(mocks.helper.answerCall).not.toHaveBeenCalled();
+    await runtime.stop();
+  });
+
   it("suspends model media and hangs up when provider readiness fails after answer", async () => {
     const talk = createTalkDriver({
       readyForAudio: async () => {

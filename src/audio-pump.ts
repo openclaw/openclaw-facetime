@@ -291,6 +291,7 @@ export function startFaceTimeAudioPump(params: {
   });
   let captureReadySettled = false;
   let routeReadySettled = false;
+  let routeReadyTimer: NodeJS.Timeout | undefined;
   let captureStderr = "";
   let resolveCaptureReady = () => {};
   let rejectCaptureReady = (_error: Error) => {};
@@ -324,7 +325,10 @@ export function startFaceTimeAudioPump(params: {
       return;
     }
     routeReadySettled = true;
-    clearTimeout(routeReadyTimer);
+    if (routeReadyTimer) {
+      clearTimeout(routeReadyTimer);
+      routeReadyTimer = undefined;
+    }
     if (error) {
       rejectRouteReady(error);
     } else {
@@ -341,16 +345,21 @@ export function startFaceTimeAudioPump(params: {
     });
   }, 10_000);
   captureReadyTimer.unref?.();
-  const routeReadyTimer = setTimeout(() => {
-    const error = new Error("FaceTime input route was not verified within 15 seconds");
-    settleRouteReady(error);
-    void Promise.resolve(params.onError?.(error)).then((safeToStop) => {
-      if (safeToStop !== false) {
-        return stop();
-      }
-    });
-  }, 15_000);
-  routeReadyTimer.unref?.();
+  const startRouteReadyTimer = () => {
+    if (routeReadySettled || routeReadyTimer) {
+      return;
+    }
+    routeReadyTimer = setTimeout(() => {
+      const error = new Error("FaceTime input route was not verified within 15 seconds");
+      settleRouteReady(error);
+      void Promise.resolve(params.onError?.(error)).then((safeToStop) => {
+        if (safeToStop !== false) {
+          return stop();
+        }
+      });
+    }, 15_000);
+    routeReadyTimer.unref?.();
+  };
   const wakeProcess = existsSync(CAFFEINATE_COMMAND)
     ? spawnFn(
         CAFFEINATE_COMMAND,
@@ -437,7 +446,10 @@ export function startFaceTimeAudioPump(params: {
 
   return {
     suppressionReady: async () => await captureReadyPromise,
-    routeReady: async () => await routeReadyPromise,
+    routeReady: async () => {
+      startRouteReadyTimer();
+      await routeReadyPromise;
+    },
     processOutputSuppressed: () => captureSuppressionActive,
     async suspendMedia() {
       if (stopped || mediaSuspended) {

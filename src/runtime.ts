@@ -620,6 +620,7 @@ export async function createFaceTimeRuntime(params: {
     if (calls.get(call.callUUID) !== call) {
       return true;
     }
+    call.carrierHangupPending = true;
     // suspendMedia gates model I/O synchronously, but native teardown is
     // fallible. Carrier safety actions must never wait for local cleanup.
     void call.talk?.suspendMedia(reason).catch((error) => {
@@ -667,7 +668,6 @@ export async function createFaceTimeRuntime(params: {
       }
       return true;
     }
-    call.carrierHangupPending = true;
     if (scheduleRetry && !call.carrierHangupRetryTimer) {
       call.carrierHangupRetryTimer = setTimeout(() => {
         call.carrierHangupRetryTimer = undefined;
@@ -822,7 +822,11 @@ export async function createFaceTimeRuntime(params: {
     try {
       // The native process tap is ready and suppressing hardware playback before answer.
       await startCallTalk(call);
-      if (call.lifecycleAbort.signal.aborted || calls.get(callUUID) !== call) {
+      if (
+        call.lifecycleAbort.signal.aborted ||
+        calls.get(callUUID) !== call ||
+        call.carrierHangupPending
+      ) {
         throw new Error("FaceTime call closed before answer");
       }
       // The helper can answer before its RPC response reaches us. From this
