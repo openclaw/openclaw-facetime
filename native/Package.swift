@@ -19,5 +19,6 @@ let package = Package(
           "-Xlinker", "__info_plist",
           "-Xlinker", "Sources/FaceTimeAudioCapture/Info.plist",
         ])
-      ])
+      ]
+    ),
   ])

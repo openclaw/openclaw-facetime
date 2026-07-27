@@ -321,17 +321,6 @@ private func validatePhysicalOutputRoute(_ process: AudioProcess) throws {
   }
 }
 
-private func validateExclusiveOpenClawInput(_ process: AudioProcess) throws -> Bool {
-  let names = (try? inputDeviceNames(process)) ?? []
-  if names.isEmpty {
-    return false
-  }
-  guard names.allSatisfy({ $0 == "OpenClaw-Mic" }) else {
-    throw CaptureError.inputRouteMismatch("\(process.name) pid=\(process.pid)", names)
-  }
-  return true
-}
-
 private func requireExpectedActiveOwner(
   _ expected: AudioProcess,
   requestedNames: Set<String>
@@ -400,7 +389,8 @@ private func waitForActiveOwner(
 
 private func waitForOpenClawMicrophoneRoute(
   _ process: AudioProcess,
-  requestedNames: Set<String>
+  requestedNames: Set<String>,
+  phase: OpenClawInputRoutePhase
 ) async throws {
   let deadline = ContinuousClock.now + .seconds(10)
   var names: [String] = []
@@ -408,8 +398,14 @@ private func waitForOpenClawMicrophoneRoute(
     try requireExpectedActiveOwner(process, requestedNames: requestedNames)
     try validatePhysicalOutputRoute(process)
     names = (try? inputDeviceNames(process)) ?? []
-    if try validateExclusiveOpenClawInput(process) {
+    switch decideOpenClawInputRoute(names, phase: phase) {
+    case .ready:
       return
+    case .retry:
+      break
+    case .fail(let failedNames):
+      throw CaptureError.inputRouteMismatch(
+        "\(process.name) pid=\(process.pid)", failedNames)
     }
     try await Task.sleep(for: .milliseconds(100))
   }
@@ -671,7 +667,9 @@ private func waitForTerminationSignal(
           try replacement.start()
           taps.append(replacement)
           try await waitForOpenClawMicrophoneRoute(
-            activeProcess, requestedNames: requestedNames)
+            activeProcess,
+            requestedNames: requestedNames,
+            phase: .steadyState)
           // The new owner is fully routed before the prior muted tap is
           // released, so handoff is gapless without retaining stale capture.
           for obsoleteTap in taps.dropLast() {
@@ -683,12 +681,21 @@ private func waitForTerminationSignal(
             "facetime-audio-capture: rebound process tap to \(activeProcess.name) pid=\(activeProcess.pid)\n",
             stderr)
         }
-        if try !validateExclusiveOpenClawInput(currentProcess) {
+        let inputNames = (try? inputDeviceNames(currentProcess)) ?? []
+        switch decideOpenClawInputRoute(inputNames, phase: .steadyState) {
+        case .ready:
+          break
+        case .retry:
           // Applying FaceTime transmission state can briefly clear the
           // process device list. Keep the muted tap active while the expected
           // OpenClaw-Mic route returns; a real wrong route still fails at once.
           try await waitForOpenClawMicrophoneRoute(
-            currentProcess, requestedNames: requestedNames)
+            currentProcess,
+            requestedNames: requestedNames,
+            phase: .steadyState)
+        case .fail(let names):
+          throw CaptureError.inputRouteMismatch(
+            "\(currentProcess.name) pid=\(currentProcess.pid)", names)
         }
         try validatePhysicalOutputRoute(currentProcess)
       } catch {
@@ -781,7 +788,9 @@ private struct FaceTimeAudioCapture {
       while true {
         do {
           try await waitForOpenClawMicrophoneRoute(
-            currentProcess, requestedNames: requestedNames)
+            currentProcess,
+            requestedNames: requestedNames,
+            phase: .initialReadiness)
           if taps.count > 1, let activeTap = taps.last {
             for obsoleteTap in taps.dropLast() {
               obsoleteTap.stop()

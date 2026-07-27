@@ -12,6 +12,7 @@
 ```sh
 pnpm typecheck
 pnpm test
+bash scripts/test-native.sh
 pnpm build
 pnpm build:capture
 pnpm build:helper:macabi
@@ -27,7 +28,7 @@ Verify that the package contains no generated `.driver` or native `.build` outpu
 openclaw gateway call facetime.preflight --json
 ```
 
-All required checks must pass. At call time, the helper answers with uplink muted, verifies that `OpenClaw-Mic` is the actual active FaceTime or Phone process's only input and that every output is physical, then enables transmission. It continues monitoring the audio owner and both routes, then safety-mutes and retries hangup on drift or failure.
+All required checks must pass. At call time, the native tap first suppresses the call app's hardware playback. The helper then answers with uplink muted without waiting for the Realtime provider. After answer, the plugin connects the provider, verifies that `OpenClaw-Mic` is the active FaceTime or Phone process's only input and that every output is physical, then enables transmission. It continues monitoring the audio owner and both routes. Any post-answer failure immediately suspends model media while retaining the native safety tap, then safety-mutes and retries hangup.
 
 ## FaceTime video acceptance
 

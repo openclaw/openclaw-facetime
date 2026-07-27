@@ -49,6 +49,7 @@ export type FaceTimeAudioPump = FaceTimeAudioOutput & {
   suppressionReady(): Promise<void>;
   routeReady(): Promise<void>;
   processOutputSuppressed(): boolean;
+  suspendMedia(): Promise<void>;
 };
 
 export function sanitizedAudioChildEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
@@ -214,7 +215,10 @@ export function startFaceTimeAudioOutput(params: {
     }
     stopped = true;
     cancelDrainTimer();
-    await terminateProcess(outputProcess);
+    clock.reset();
+    // SoX can retain speech that was already written to stdin. Kill it
+    // immediately so a safety suspension cannot play queued model audio.
+    await terminateProcess(outputProcess, "SIGKILL");
   };
 
   outputProcess = spawnOutput();
@@ -272,6 +276,7 @@ export function startFaceTimeAudioPump(params: {
     ((command, args, options) => spawn(command, args, options) as unknown as PumpProcess);
   const childEnv = sanitizedAudioChildEnv();
   let stopped = false;
+  let mediaSuspended = false;
   let captureSuppressionActive = false;
   let captureFailureReported = false;
   const output = startFaceTimeAudioOutput({
@@ -375,6 +380,7 @@ export function startFaceTimeAudioPump(params: {
       return;
     }
     stopped = true;
+    mediaSuspended = true;
     captureSuppressionActive = false;
     settleCaptureReady(new Error("FaceTime process-tap capture stopped before becoming ready"));
     settleRouteReady(new Error("FaceTime input route stopped before verification"));
@@ -421,7 +427,7 @@ export function startFaceTimeAudioPump(params: {
     params.logger.debug?.(`[facetime] capture: ${message.trim()}`);
   });
   captureProcess.stdout?.on("data", (chunk) => {
-    if (!stopped) {
+    if (!stopped && !mediaSuspended) {
       const audio = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       if (audio.byteLength > 0) {
         params.onInputAudio(audio);
@@ -433,6 +439,15 @@ export function startFaceTimeAudioPump(params: {
     suppressionReady: async () => await captureReadyPromise,
     routeReady: async () => await routeReadyPromise,
     processOutputSuppressed: () => captureSuppressionActive,
+    async suspendMedia() {
+      if (stopped || mediaSuspended) {
+        return;
+      }
+      // Carrier cleanup can be uncertain. Stop model playback and input
+      // forwarding, but retain the native tap that suppresses Mac hardware.
+      mediaSuspended = true;
+      await output.stop();
+    },
     writeOutputAudio: output.writeOutputAudio,
     clearOutputAudio: output.clearOutputAudio,
     generatedAudioMs: output.generatedAudioMs,

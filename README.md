@@ -170,7 +170,7 @@ Set this route once in the app that owns the call:
 - macOS system input: any physical microphone
 - macOS system output: any physical device
 
-FaceTime video calls use FaceTime. FaceTime audio calls use Phone on current macOS. The helper answers with the uplink muted, verifies that `OpenClaw-Mic` is the actual active call process's only input device and that its outputs are physical, then enables transmission. It keeps re-resolving the audio owner and checking both routes during the call, then hangs up if anything changes.
+FaceTime video calls use FaceTime. FaceTime audio calls use Phone on current macOS. The native process tap first suppresses the call app's hardware playback, then the helper answers with the uplink muted. Only after answer does the plugin connect the Realtime provider, verify that `OpenClaw-Mic` is the active call process's only input device and that its outputs are physical, and enable transmission. This keeps provider startup latency out of the incoming-call answer path. The plugin keeps re-resolving the audio owner and checking both routes during the call, then hangs up if anything changes.
 
 Do not select an Aggregate, Multi-Output, BlackHole, `OpenClaw-Feed`, or `OpenClaw-Mic` device as the call output.
 
@@ -185,7 +185,7 @@ For unattended inbound calls on a remotely managed Mac:
 
 The Core Audio process tap starts before auto-answer and uses per-process mute behavior. Caller audio is still captured for OpenClaw, but the call process sends nothing to speakers or headphones. This suppression follows the process across volume and default-output changes and does not change the Mac's global mute state.
 
-If carrier hangup fails, the helper safety-mutes both directions, retains the process tap, and retries instead of dropping local protection around a still-connected call.
+If provider startup, routing, helper control, or carrier hangup fails after answer, the plugin immediately stops model input and speech, safety-mutes both call directions, retains the process tap, and retries hangup instead of dropping local protection around a still-connected call.
 
 ## Preflight and live test
 

@@ -17,6 +17,7 @@
     "docs/",
     "helper/",
     "native/Package.swift",
+    "native/Checks/",
     "native/Sources/",
     "scripts/",
     "skills/",

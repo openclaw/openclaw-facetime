@@ -93,6 +93,8 @@ type ActiveFaceTimeCall = {
   unmuteRequested?: boolean;
   carrierHangupPending?: boolean;
   carrierHangupRetryTimer?: NodeJS.Timeout;
+  carrierHangupAttempt?: Promise<boolean>;
+  carrierHangupRequired?: boolean;
 };
 
 const OUTBOUND_RECONCILE_ATTEMPTS = 12;
@@ -499,6 +501,11 @@ export async function createFaceTimeRuntime(params: {
       params.logger.warn(
         `[facetime] ${bundleIdentifier} helper disconnected during a call; retaining audio safety bridge`,
       );
+      if (helper.connectedSockets === 0) {
+        for (const call of calls.values()) {
+          void attemptCarrierHangup(call, "helper-disconnected");
+        }
+      }
     },
     onStale(bundleIdentifier, processId) {
       helperSupervisor?.stale(bundleIdentifier, processId);
@@ -613,65 +620,63 @@ export async function createFaceTimeRuntime(params: {
     if (calls.get(call.callUUID) !== call) {
       return true;
     }
-    try {
-      await helper.safetyMute(call.callUUID);
-    } catch (error) {
+    // suspendMedia gates model I/O synchronously, but native teardown is
+    // fallible. Carrier safety actions must never wait for local cleanup.
+    void call.talk?.suspendMedia(reason).catch((error) => {
       params.logger.warn(
-        `[facetime] failed to safety-mute carrier ${call.callUUID}: ${formatErrorMessage(error)}`,
+        `[facetime] local media suspension failed for ${call.callUUID}: ${formatErrorMessage(error)}`,
       );
-    }
+    });
+    const attempt =
+      call.carrierHangupAttempt ??
+      (async () => {
+        try {
+          await helper.safetyMute(call.callUUID);
+        } catch (error) {
+          params.logger.warn(
+            `[facetime] failed to safety-mute carrier ${call.callUUID}: ${formatErrorMessage(error)}`,
+          );
+        }
+        try {
+          await helper.leaveCall(call.callUUID);
+          return true;
+        } catch (error) {
+          if (isCarrierAlreadyGoneError(error)) {
+            return true;
+          }
+          params.logger.warn(
+            `[facetime] carrier hangup pending for ${call.callUUID}: ${formatErrorMessage(error)}`,
+          );
+          return false;
+        }
+      })();
+    call.carrierHangupAttempt = attempt;
+    let carrierClosed: boolean;
     try {
-      await helper.leaveCall(call.callUUID);
+      carrierClosed = await attempt;
+    } finally {
+      if (call.carrierHangupAttempt === attempt) {
+        call.carrierHangupAttempt = undefined;
+      }
+    }
+    if (carrierClosed) {
       call.carrierHangupPending = false;
+      call.carrierHangupRequired = false;
       if (closeLocal) {
         await closeCall(call.callUUID, reason);
       }
       return true;
-    } catch (error) {
-      if (isCarrierAlreadyGoneError(error)) {
-        call.carrierHangupPending = false;
-        if (closeLocal) {
-          await closeCall(call.callUUID, `${reason}: carrier-already-ended`);
-        }
-        return true;
-      }
-      call.carrierHangupPending = true;
-      params.logger.warn(
-        `[facetime] carrier hangup pending for ${call.callUUID}: ${formatErrorMessage(error)}`,
-      );
-      if (scheduleRetry && !call.carrierHangupRetryTimer) {
-        call.carrierHangupRetryTimer = setTimeout(() => {
-          call.carrierHangupRetryTimer = undefined;
-          void attemptCarrierHangup(call, reason);
-        }, 1_000);
-        call.carrierHangupRetryTimer.unref?.();
-      }
-      // Keep the process tap alive until leaveCall succeeds or an ended event arrives.
-      return false;
     }
-  };
-
-  const waitForStartupCarrierHangup = async (
-    call: ActiveFaceTimeCall,
-    reason: string,
-  ): Promise<boolean> => {
-    while (calls.get(call.callUUID) === call && !call.lifecycleAbort.signal.aborted) {
-      // Do not close local call state from inside talkStarting: closeCall waits
-      // for that same promise. The outer call-event path closes it after startup rejects.
-      if (
-        await attemptCarrierHangup(call, reason, {
-          closeLocal: false,
-          scheduleRetry: false,
-        })
-      ) {
-        return true;
-      }
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, 1_000);
-        timer.unref?.();
-      });
+    call.carrierHangupPending = true;
+    if (scheduleRetry && !call.carrierHangupRetryTimer) {
+      call.carrierHangupRetryTimer = setTimeout(() => {
+        call.carrierHangupRetryTimer = undefined;
+        void attemptCarrierHangup(call, reason);
+      }, 1_000);
+      call.carrierHangupRetryTimer.unref?.();
     }
-    return true;
+    // Keep the process tap alive until leaveCall succeeds or an ended event arrives.
+    return false;
   };
 
   const startCallTalk = async (call: ActiveFaceTimeCall) => {
@@ -695,16 +700,21 @@ export async function createFaceTimeRuntime(params: {
           async onFailure(error) {
             // Ringing calls have not joined a carrier yet, so their tap can close
             // immediately. Active calls retain it until carrier hangup is proven.
-            if (call.callStatus !== 1) {
+            if (!call.carrierHangupRequired) {
               return true;
             }
-            if (!call.talk) {
-              return await waitForStartupCarrierHangup(
-                call,
-                `talk-start-failed: ${formatErrorMessage(error)}`,
-              );
+            const failureReason = `talk-failed: ${formatErrorMessage(error)}`;
+            const carrierClosed = await attemptCarrierHangup(call, failureReason, {
+              closeLocal: false,
+            });
+            if (carrierClosed) {
+              // The failure callback can run inside readyForAudio. Defer local
+              // cleanup so closeCall never waits on the activation invoking us.
+              queueMicrotask(() => {
+                void closeCall(call.callUUID, failureReason);
+              });
             }
-            return await attemptCarrierHangup(call, `talk-failed: ${formatErrorMessage(error)}`);
+            return carrierClosed;
           },
         });
         // A helper disconnect or hangup can arrive while the provider connects.
@@ -812,6 +822,12 @@ export async function createFaceTimeRuntime(params: {
     try {
       // The native process tap is ready and suppressing hardware playback before answer.
       await startCallTalk(call);
+      if (call.lifecycleAbort.signal.aborted || calls.get(callUUID) !== call) {
+        throw new Error("FaceTime call closed before answer");
+      }
+      // The helper can answer before its RPC response reaches us. From this
+      // point onward, any failure must prove carrier cleanup before tap release.
+      call.carrierHangupRequired = true;
       answerAttempted = true;
       await helper.answerCall(callUUID);
       await activateCallTalk(call, { unmute: true });
@@ -867,6 +883,7 @@ export async function createFaceTimeRuntime(params: {
       calls.set(callUUID, call);
     }
     updateCallStatus(call, event);
+    call.carrierHangupRequired = true;
     try {
       await startCallTalk(call);
       await activateCallTalk(call, { unmute: event.data.is_sending_audio === false });
@@ -1009,7 +1026,7 @@ export async function createFaceTimeRuntime(params: {
       remoteMeterLevel: call.remoteMeterLevel,
       maxLocalMeterLevel: call.maxLocalMeterLevel,
       maxRemoteMeterLevel: call.maxRemoteMeterLevel,
-      realtimeActive: Boolean(call.talk),
+      realtimeActive: call.talk?.realtimeActive() === true,
       audioReady: call.audioReady,
       audioTransport: call.audioTransport
         ? {

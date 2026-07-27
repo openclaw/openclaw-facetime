@@ -71,8 +71,10 @@ describe("FaceTime audio pump", () => {
     ]);
 
     const suppressionReady = pump.suppressionReady();
+    expect(pump.processOutputSuppressed()).toBe(false);
     processes[1]?.stderr.emit("data", "facetime-audio-capture: started FaceTime process tap\n");
     await expect(suppressionReady).resolves.toBeUndefined();
+    expect(pump.processOutputSuppressed()).toBe(true);
     const routeReady = pump.routeReady();
     processes[1]?.stderr.emit(
       "data",
@@ -121,7 +123,7 @@ describe("FaceTime audio pump", () => {
       await stopPromise;
       expect(wake?.kills).toEqual(["SIGTERM", "SIGKILL"]);
       expect(capture?.kills).toEqual(["SIGTERM", "SIGKILL"]);
-      expect(secondOutput?.kills).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(secondOutput?.kills).toEqual(["SIGKILL"]);
       expect(capture?.stdin.ended).toBe(true);
       expect(secondOutput?.stdin.ended).toBe(true);
     } finally {
@@ -204,6 +206,51 @@ describe("FaceTime audio pump", () => {
     await Promise.resolve();
 
     expect(processes.every((process) => process.kills.length === 0)).toBe(true);
+  });
+
+  it("stops model input and playback while retaining the native safety tap", async () => {
+    vi.useFakeTimers();
+    try {
+      const processes: FakeProcess[] = [];
+      const onInputAudio = vi.fn();
+      const pump = startFaceTimeAudioPump({
+        captureBinary: "/capture",
+        logger: console,
+        onInputAudio,
+        spawn: vi.fn(() => {
+          const process = new FakeProcess();
+          processes.push(process);
+          return process;
+        }),
+      });
+      processes[1]?.stderr.emit(
+        "data",
+        "facetime-audio-capture: started FaceTime process tap\n",
+      );
+      pump.writeOutputAudio(Buffer.from([1, 2]));
+
+      const suspended = pump.suspendMedia();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await suspended;
+      processes[1]?.stdout.emit("data", Buffer.from([3, 4]));
+      pump.writeOutputAudio(Buffer.from([5, 6]));
+      pump.clearOutputAudio();
+
+      expect(pump.processOutputSuppressed()).toBe(true);
+      expect(processes[0]?.kills).toEqual(["SIGKILL"]);
+      expect(processes[1]?.kills).toEqual([]);
+      expect(processes[2]?.kills).toEqual([]);
+      expect(onInputAudio).not.toHaveBeenCalled();
+      expect(processes).toHaveLength(3);
+
+      const stopped = pump.stop();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await stopped;
+      expect(processes[1]?.kills).toEqual(["SIGTERM", "SIGKILL"]);
+      expect(processes[2]?.kills).toEqual(["SIGTERM", "SIGKILL"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not expose credentials to native audio children", () => {
