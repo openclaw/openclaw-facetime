@@ -501,10 +501,10 @@ export async function createFaceTimeRuntime(params: {
       params.logger.warn(
         `[facetime] ${bundleIdentifier} helper disconnected during a call; retaining audio safety bridge`,
       );
-      if (helper.connectedSockets === 0) {
-        for (const call of calls.values()) {
-          void attemptCarrierHangup(call, "helper-disconnected");
-        }
+      // Call events do not identify which helper owns the carrier. Another
+      // app's remaining socket cannot prove control of this call is intact.
+      for (const call of calls.values()) {
+        void attemptCarrierHangup(call, "helper-disconnected");
       }
     },
     onStale(bundleIdentifier, processId) {

@@ -243,14 +243,15 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
-  it("enters safety-only mode before helper cleanup when control disconnects", async () => {
+  it("enters safety-only mode when one helper disconnects but another remains", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);
     const runtime = await createRuntime();
     mocks.helperParams?.onMessage(incomingCall(1));
     await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
     vi.clearAllMocks();
-    mocks.helper.connectedSockets = 0;
+    mocks.helper.connectedSockets = 1;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone"];
     talk.suspendMedia.mockRejectedValueOnce(new Error("local suspension failed"));
 
     mocks.helperParams?.onDisconnect("com.apple.FaceTime");
