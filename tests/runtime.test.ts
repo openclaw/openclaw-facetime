@@ -265,6 +265,41 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
+  it("keeps startup joined to carrier cleanup when an active call tap must be retained", async () => {
+    vi.useFakeTimers();
+    let runtime: Awaited<ReturnType<typeof createRuntime>> | undefined;
+    try {
+      const startupError = new Error("capture failed during startup");
+      let releaseStartup: Promise<boolean> | undefined;
+      mocks.helper.leaveCall
+        .mockRejectedValueOnce(new Error("carrier cleanup unavailable"))
+        .mockResolvedValue({});
+      mocks.startTalk.mockImplementationOnce(
+        async (params: { onFailure(error: Error): Promise<boolean> }) => {
+          releaseStartup = params.onFailure(startupError);
+          await releaseStartup;
+          throw startupError;
+        },
+      );
+      runtime = await createRuntime();
+
+      mocks.helperParams?.onMessage(incomingCall(1));
+      await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(1));
+      expect(releaseStartup).toBeDefined();
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(releaseStartup).resolves.toBe(true);
+      await vi.waitFor(async () => {
+        expect((await runtime?.status())?.calls).toEqual([]);
+      });
+
+      expect(mocks.helper.leaveCall.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await runtime?.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("enters safety-only mode when one helper disconnects but another remains", async () => {
     const talk = createTalkDriver({});
     mocks.startTalk.mockResolvedValueOnce(talk);

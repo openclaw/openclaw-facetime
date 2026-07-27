@@ -679,6 +679,29 @@ export async function createFaceTimeRuntime(params: {
     return false;
   };
 
+  const waitForStartupCarrierHangup = async (
+    call: ActiveFaceTimeCall,
+    reason: string,
+  ): Promise<boolean> => {
+    while (calls.get(call.callUUID) === call && !call.lifecycleAbort.signal.aborted) {
+      // closeCall waits for talkStarting, so this pre-return driver must retain
+      // its own tap until carrier cleanup succeeds or an ended event aborts it.
+      if (
+        await attemptCarrierHangup(call, reason, {
+          closeLocal: false,
+          scheduleRetry: false,
+        })
+      ) {
+        return true;
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 1_000);
+        timer.unref?.();
+      });
+    }
+    return true;
+  };
+
   const startCallTalk = async (call: ActiveFaceTimeCall) => {
     if (call.talk) {
       return;
@@ -704,6 +727,9 @@ export async function createFaceTimeRuntime(params: {
               return true;
             }
             const failureReason = `talk-failed: ${formatErrorMessage(error)}`;
+            if (!call.talk) {
+              return await waitForStartupCarrierHangup(call, failureReason);
+            }
             const carrierClosed = await attemptCarrierHangup(call, failureReason, {
               closeLocal: false,
             });
