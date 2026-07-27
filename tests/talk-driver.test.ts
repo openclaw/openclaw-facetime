@@ -329,7 +329,9 @@ describe("FaceTime talk driver lifecycle", () => {
     const onFailure = vi.fn(async () => false);
     await startReadyFaceTimeTalkDriver(startParams({ onFailure }));
 
-    await mocks.pumpParams?.onError(new Error("carrier hangup pending"));
+    await expect(
+      mocks.pumpParams?.onError(new Error("carrier hangup pending")),
+    ).resolves.toBe(false);
 
     expect(onFailure).toHaveBeenCalledOnce();
     expect(mocks.pump.stop).not.toHaveBeenCalled();
