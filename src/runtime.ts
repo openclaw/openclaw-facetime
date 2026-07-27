@@ -466,6 +466,7 @@ export async function createFaceTimeRuntime(params: {
     return { ...(callUUID ? { callUUID } : {}), dialID, handle };
   };
   let helperSupervisor: FaceTimeHelperSupervisor | undefined;
+  let helperTopologyVersion = 0;
   const helper = new FaceTimeHelperSocketServer({
     host: config.helperHost,
     port: config.helperPort,
@@ -488,10 +489,17 @@ export async function createFaceTimeRuntime(params: {
       }
     },
     onConnect(bundleIdentifier) {
+      helperTopologyVersion += 1;
       helperSupervisor?.connected(bundleIdentifier);
+      for (const call of calls.values()) {
+        if (call.carrierHangupPending) {
+          void attemptCarrierHangup(call, "helper-reconnected");
+        }
+      }
       void reconcilePendingOutboundCall().finally(scheduleOutboundReconciliation);
     },
     onDisconnect(bundleIdentifier) {
+      helperTopologyVersion += 1;
       helperSupervisor?.disconnected(bundleIdentifier);
       if (stopping || calls.size === 0) {
         return;
@@ -631,6 +639,9 @@ export async function createFaceTimeRuntime(params: {
     const attempt =
       call.carrierHangupAttempt ??
       (async () => {
+        const topologyVersion = helperTopologyVersion;
+        const helperTopologyIncomplete =
+          helperSupervisor?.status().some((target) => !target.connected) ?? true;
         try {
           await helper.safetyMute(call.callUUID);
         } catch (error) {
@@ -642,7 +653,13 @@ export async function createFaceTimeRuntime(params: {
           await helper.leaveCall(call.callUUID);
           return true;
         } catch (error) {
-          if (isCarrierAlreadyGoneError(error)) {
+          // A non-owner helper can report "Call not found" while another app
+          // still owns the carrier. Accept absence only from a stable, complete topology.
+          if (
+            isCarrierAlreadyGoneError(error) &&
+            !helperTopologyIncomplete &&
+            helperTopologyVersion === topologyVersion
+          ) {
             return true;
           }
           params.logger.warn(

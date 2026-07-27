@@ -5,11 +5,12 @@ const mocks = vi.hoisted(() => ({
     | undefined
     | {
         onMessage(message: unknown): void;
+        onConnect(bundleIdentifier: string): void;
         onDisconnect(bundleIdentifier: string): void;
       },
   helper: {
-    connectedSockets: 1,
-    connectedHelperBundles: ["com.apple.FaceTime"],
+    connectedSockets: 2,
+    connectedHelperBundles: ["com.apple.FaceTime", "com.apple.mobilephone"],
     start: vi.fn(async () => {}),
     stop: vi.fn(async () => {}),
     answerCall: vi.fn(async () => ({})),
@@ -41,7 +42,21 @@ vi.mock("../src/helper-supervisor.js", () => ({
     start() {}
     stop() {}
     status() {
-      return [];
+      const connected = new Set(mocks.helper.connectedHelperBundles);
+      return [
+        {
+          target: "FaceTime",
+          connected:
+            connected.has("com.apple.FaceTime") ||
+            connected.has("com.apple.FaceTime.FTConversationService"),
+        },
+        {
+          target: "Phone",
+          connected:
+            connected.has("com.apple.mobilephone") ||
+            connected.has("com.apple.TelephonyUtilities"),
+        },
+      ];
     }
     connected() {}
     disconnected() {}
@@ -144,8 +159,8 @@ describe("FaceTime runtime call sequencing", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.helperParams = undefined;
-    mocks.helper.connectedSockets = 1;
-    mocks.helper.connectedHelperBundles = ["com.apple.FaceTime"];
+    mocks.helper.connectedSockets = 2;
+    mocks.helper.connectedHelperBundles = ["com.apple.FaceTime", "com.apple.mobilephone"];
   });
 
   it("answers muted after suppression, then waits for provider and route readiness", async () => {
@@ -316,6 +331,92 @@ describe("FaceTime runtime call sequencing", () => {
 
     expect(talk.suspendMedia).toHaveBeenCalled();
     expect(mocks.helper.safetyMute).toHaveBeenCalledWith("call-1");
+    await runtime.stop();
+  });
+
+  it("retains the safety bridge when a non-owner helper cannot find the call", async () => {
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockResolvedValueOnce(talk);
+    const runtime = await createRuntime();
+    mocks.helperParams?.onMessage(incomingCall(1));
+    await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
+    vi.clearAllMocks();
+    mocks.helper.connectedSockets = 1;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone"];
+    mocks.helper.leaveCall.mockRejectedValueOnce(new Error("Call not found!"));
+
+    mocks.helperParams?.onDisconnect("com.apple.FaceTime");
+    await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledWith("call-1"));
+
+    expect((await runtime.status()).calls).toMatchObject([
+      { callUUID: "call-1", carrierHangupPending: true },
+    ]);
+    expect(talk.close).not.toHaveBeenCalled();
+
+    mocks.helper.connectedSockets = 2;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone", "com.apple.FaceTime"];
+    mocks.helperParams?.onConnect("com.apple.FaceTime");
+    await vi.waitFor(async () => expect((await runtime.status()).calls).toEqual([]));
+    expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(2);
+    expect(talk.close).toHaveBeenCalledWith("helper-reconnected");
+    await runtime.stop();
+  });
+
+  it("treats a helper missing before call discovery as incomplete topology", async () => {
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockResolvedValueOnce(talk);
+    const runtime = await createRuntime();
+    mocks.helper.connectedSockets = 1;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone"];
+    mocks.helperParams?.onDisconnect("com.apple.FaceTime");
+    mocks.helperParams?.onMessage(incomingCall(1));
+    await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
+    mocks.helper.leaveCall.mockRejectedValueOnce(new Error("Call not found!"));
+
+    await expect(runtime.hangup()).rejects.toThrow("carrier hangup pending");
+
+    expect((await runtime.status()).calls).toMatchObject([
+      { callUUID: "call-1", carrierHangupPending: true },
+    ]);
+    expect(talk.close).not.toHaveBeenCalled();
+
+    mocks.helper.connectedSockets = 2;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone", "com.apple.FaceTime"];
+    mocks.helperParams?.onConnect("com.apple.FaceTime");
+    await vi.waitFor(async () => expect((await runtime.status()).calls).toEqual([]));
+    expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(2);
+    expect(talk.close).toHaveBeenCalledWith("helper-reconnected");
+    await runtime.stop();
+  });
+
+  it("retries after a helper reconnects during an in-flight hangup", async () => {
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockResolvedValueOnce(talk);
+    const runtime = await createRuntime();
+    mocks.helperParams?.onMessage(incomingCall(1));
+    await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
+    let rejectFirstHangup = (_error: Error) => {};
+    mocks.helper.leaveCall.mockImplementationOnce(
+      async () =>
+        await new Promise<never>((_resolve, reject) => {
+          rejectFirstHangup = reject;
+        }),
+    );
+    mocks.helper.connectedSockets = 1;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone"];
+    mocks.helperParams?.onDisconnect("com.apple.FaceTime");
+    await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(1));
+
+    mocks.helper.connectedSockets = 2;
+    mocks.helper.connectedHelperBundles = ["com.apple.mobilephone", "com.apple.FaceTime"];
+    mocks.helperParams?.onConnect("com.apple.FaceTime");
+    rejectFirstHangup(new Error("Call not found!"));
+
+    await vi.waitFor(() => expect(mocks.helper.leaveCall).toHaveBeenCalledTimes(2), {
+      timeout: 2_000,
+    });
+    await vi.waitFor(async () => expect((await runtime.status()).calls).toEqual([]));
+    expect(talk.close).toHaveBeenCalled();
     await runtime.stop();
   });
 });
