@@ -1,3 +1,6 @@
+// Adapted and modified by OpenClaw contributors in 2026.
+// Upstream BlueBubbles helper is Apache-2.0; see THIRD_PARTY_NOTICES.md.
+
 @import AppKit;
 
 #import <float.h>

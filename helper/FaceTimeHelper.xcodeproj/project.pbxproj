@@ -1,4 +1,5 @@
 // !$*UTF8*$!
+// Modified by OpenClaw contributors in 2026 from the Apache-2.0 BlueBubbles helper.
 {
 	archiveVersion = 1;
 	classes = {
@@ -51,7 +52,6 @@
 		A649F26E2ABA002A00D2F1F0 /* callservicesd */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = callservicesd; path = /System/Library/PrivateFrameworks/TelephonyUtilities.framework/callservicesd; sourceTree = "<group>"; };
 		A65C21BA2AAD5E3400D6FB7F /* TUConversationManager.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = TUConversationManager.h; sourceTree = "<group>"; };
 		A65C21BB2AAD602500D6FB7F /* TelephonyUtilities.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = TelephonyUtilities.framework; path = /System/Library/PrivateFrameworks/TelephonyUtilities.framework; sourceTree = "<group>"; };
-		A65C21BF2AAD6D0900D6FB7F /* CaptainHook.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CaptainHook.h; sourceTree = "<group>"; };
 		A65C21C02AAD722500D6FB7F /* CTBlockDescription.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = CTBlockDescription.h; sourceTree = "<group>"; };
 		A65C21C12AAD725300D6FB7F /* CTBlockDescription.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = CTBlockDescription.m; sourceTree = "<group>"; };
 		A6CA47952AC0B23C004E21C8 /* avconferenced */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.executable"; name = avconferenced; path = /usr/libexec/avconferenced; sourceTree = "<group>"; };
@@ -165,7 +165,6 @@
 			children = (
 				FBCE4ECA201C0F4D002F8A61 /* ZKSwizzle.h */,
 				FBCE4ECB201C0F4D002F8A61 /* ZKSwizzle.m */,
-				A65C21BF2AAD6D0900D6FB7F /* CaptainHook.h */,
 				A65C21C02AAD722500D6FB7F /* CTBlockDescription.h */,
 				A65C21C12AAD725300D6FB7F /* CTBlockDescription.m */,
 			);

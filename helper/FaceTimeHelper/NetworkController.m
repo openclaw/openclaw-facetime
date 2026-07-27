@@ -4,6 +4,8 @@
 //
 //  Created by Samer Shihabi on 11/20/20.
 //  OpenClaw FaceTime helper.
+//  Adapted and modified from the Apache-2.0 BlueBubbles helper.
+//  See THIRD_PARTY_NOTICES.md.
 //
 
 #import <Foundation/Foundation.h>

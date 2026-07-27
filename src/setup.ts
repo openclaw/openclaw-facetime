@@ -53,6 +53,12 @@ type SetupParams = {
   readAssertionsFile?: () => Promise<string>;
 };
 
+const XCODE_APP = "/Applications/Xcode.app";
+const XCODE_CLANG =
+  `${XCODE_APP}/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/clang`;
+const XCODE_MACOS_SDK =
+  `${XCODE_APP}/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk`;
+
 const PRECHECK_ACTIONS: Record<
   string,
   Pick<FaceTimeSetupAction, "id" | "kind" | "label" | "command" | "gatewayMethod" | "settingsPath">
@@ -275,25 +281,35 @@ export async function runFaceTimeSetup(params: SetupParams): Promise<FaceTimeSet
   const checks: FaceTimeSetupCheck[] = [];
   const actions: FaceTimeSetupAction[] = [];
 
-  const xcode = await checkCommand(
-    params.runCommandWithTimeout,
-    ["/usr/bin/xcode-select", "-p"],
-    (stdout) => firstLine(stdout) ?? "Xcode command line tools selected",
-  );
+  const [xcodeCompiler, xcodeSdk] = await Promise.all([
+    checkCommand(
+      params.runCommandWithTimeout,
+      ["/bin/test", "-x", XCODE_CLANG],
+      () => XCODE_CLANG,
+    ),
+    checkCommand(params.runCommandWithTimeout, ["/bin/test", "-d", XCODE_MACOS_SDK], () => {
+      return XCODE_MACOS_SDK;
+    }),
+  ]);
+  const xcodeReady = xcodeCompiler.ok && xcodeSdk.ok;
   checks.push({
     id: "xcode-tools",
-    label: "Xcode command line tools",
-    status: xcode.ok ? "ready" : "action-required",
+    label: "Full Xcode installation",
+    status: xcodeReady ? "ready" : "action-required",
     required: true,
-    message: xcode.message,
-    ...(!xcode.ok ? { actionId: "install-xcode-tools" } : {}),
+    message: xcodeReady
+      ? `Full Xcode compiler and macOS SDK are available at ${XCODE_APP}`
+      : `Full Xcode is required at ${XCODE_APP}; Command Line Tools alone cannot build the FaceTime helper`,
+    ...(!xcodeReady ? { actionId: "install-xcode-tools" } : {}),
   });
-  if (!xcode.ok) {
+  if (!xcodeReady) {
+    // Keep the established action id stable for setup-report consumers while
+    // directing operators to the full Xcode app the helper build actually uses.
     addAction(actions, {
       id: "install-xcode-tools",
       kind: "command",
-      label: "Install Xcode command line tools",
-      command: "xcode-select --install",
+      label: "Install full Xcode in /Applications",
+      command: "open 'https://apps.apple.com/us/app/xcode/id497799835'",
     });
   }
 

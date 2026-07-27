@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Modified by OpenClaw contributors in 2026 from the Apache-2.0 BlueBubbles helper. -->
 <plist version="1.0">
 <dict>
 	<key>BuildMachineOSBuild</key>

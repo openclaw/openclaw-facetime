@@ -70,8 +70,8 @@ const readyRuntime: FaceTimeRuntimeStatus = {
 
 function readyCommandRunner() {
   return vi.fn(async (argv: string[]) => {
-    if (argv[0] === "/usr/bin/xcode-select") {
-      return { code: 0, stdout: "/Library/Developer/CommandLineTools\n", stderr: "" };
+    if (argv[0] === "/bin/test" && (argv[1] === "-x" || argv[1] === "-d")) {
+      return { code: 0, stdout: "", stderr: "" };
     }
     if (argv[0] === "/usr/sbin/DevToolsSecurity") {
       return { code: 0, stdout: "Developer mode is currently enabled.\n", stderr: "" };
@@ -158,8 +158,8 @@ describe("FaceTime guided setup", () => {
 
   it("turns protected prerequisites into explicit operator actions", async () => {
     const runCommandWithTimeout = vi.fn(async (argv: string[]) => {
-      if (argv[0] === "/usr/bin/xcode-select") {
-        return { code: 2, stdout: "", stderr: "unable to get active developer directory" };
+      if (argv[0] === "/bin/test" && (argv[1] === "-x" || argv[1] === "-d")) {
+        return { code: 1, stdout: "", stderr: "" };
       }
       if (argv[0] === "/usr/sbin/DevToolsSecurity") {
         return { code: 0, stdout: "Developer mode is currently disabled.\n", stderr: "" };
@@ -221,6 +221,61 @@ describe("FaceTime guided setup", () => {
     expect(report.actions.find((action) => action.id === "disable-sip-debugging")).toMatchObject({
       command: "csrutil enable --without debug",
     });
+    expect(report.checks.find((check) => check.id === "xcode-tools")).toMatchObject({
+      label: "Full Xcode installation",
+      message:
+        "Full Xcode is required at /Applications/Xcode.app; Command Line Tools alone cannot build the FaceTime helper",
+    });
+    expect(report.actions.find((action) => action.id === "install-xcode-tools")).toMatchObject({
+      label: "Install full Xcode in /Applications",
+      command: "open 'https://apps.apple.com/us/app/xcode/id497799835'",
+    });
+  });
+
+  it("does not accept a Command Line Tools-only installation", async () => {
+    const runCommandWithTimeout = vi.fn(async (argv: string[]) => {
+      if (argv[0] === "/bin/test" && (argv[1] === "-x" || argv[1] === "-d")) {
+        return { code: 1, stdout: "", stderr: "" };
+      }
+      if (argv[0] === "/usr/sbin/DevToolsSecurity") {
+        return { code: 0, stdout: "Developer mode is currently enabled.\n", stderr: "" };
+      }
+      if (argv[0] === "/usr/bin/csrutil") {
+        return {
+          code: 0,
+          stdout: "System Integrity Protection status: disabled.\n",
+          stderr: "",
+        };
+      }
+      if (argv[0] === "/bin/sh" && argv.at(-1) === "--status") {
+        return { code: 0, stdout: "current\n", stderr: "" };
+      }
+      if (argv[0] === "/bin/bash") {
+        return { code: 0, stdout: "true\n", stderr: "" };
+      }
+      if (argv[0] === "/usr/bin/xcode-select") {
+        return { code: 0, stdout: "/Library/Developer/CommandLineTools\n", stderr: "" };
+      }
+      throw new Error(`unexpected command: ${argv.join(" ")}`);
+    });
+
+    const report = await runFaceTimeSetup({
+      config: resolveFaceTimeConfig({ whitelistHandles: ["owner@example.com"] }),
+      pluginRoot: "/plugin",
+      runCommandWithTimeout: runCommandWithTimeout as any,
+      runtimeStatus: readyRuntime,
+      preflight: readyPreflight,
+      readAssertionsFile: async () => JSON.stringify({ data: [] }),
+    });
+
+    expect(report.readyForTest).toBe(false);
+    expect(report.checks.find((check) => check.id === "xcode-tools")?.status).toBe(
+      "action-required",
+    );
+    expect(runCommandWithTimeout).not.toHaveBeenCalledWith(
+      ["/usr/bin/xcode-select", "-p"],
+      expect.anything(),
+    );
   });
 
   it("shows automatic helper repair without declaring the machine ready", async () => {

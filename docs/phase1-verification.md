@@ -45,11 +45,18 @@ All required checks must pass. At call time, the native tap first suppresses the
 
 ## FaceTime audio acceptance
 
-Repeat the same sequence with a Phone-owned FaceTime audio call. Select `OpenClaw-Mic` in Phone, not FaceTime. This is a separate proof because current macOS assigns audio-only calls to Phone.
+Repeat the same sequence with a Phone-owned FaceTime audio call. Select
+`OpenClaw-Mic` in Phone, not FaceTime. This is a separate proof because the
+live-tested macOS 26.4 route assigns audio-only calls to Phone.
 
 ## Evidence classes
 
 - The automated suite and driver loopback are deterministic integration proof.
 - A successful process-tap `--check` proves helper execution and TCC permission, but not remote delivery.
 - User confirmation from the iPhone is exact-path runtime proof for delivery.
-- The earlier successful OpenClaw example call is root-cause and design evidence. The plugin still needs its own final exact-path pass after consolidation.
+- A patched OpenClaw `2026.7.2-beta.3` host completed a user-confirmed live
+  FaceTime Audio round trip through the consolidated plugin, including a
+  personalized greeting and agent workspace context.
+- The current repository head includes later carrier-safety and setup changes
+  covered by automated tests. It still needs one exact-head live FaceTime Audio
+  pass, and FaceTime video remains a separate acceptance pass.

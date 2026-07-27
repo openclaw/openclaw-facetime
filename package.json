@@ -2,6 +2,12 @@
   "name": "@openclaw/facetime",
   "version": "2026.5.10-beta.1",
   "description": "Private FaceTime realtime voice carrier for OpenClaw agents",
+  "license": "MIT",
+  "author": "OpenClaw contributors",
+  "homepage": "https://github.com/openclaw/openclaw-facetime#readme",
+  "bugs": {
+    "url": "https://github.com/openclaw/openclaw-facetime/issues"
+  },
   "keywords": [
     "facetime",
     "openclaw",
@@ -22,11 +28,16 @@
     "scripts/",
     "skills/",
     "doctor-contract-api.ts",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
     "README.md",
     "openclaw.plugin.json"
   ],
   "os": [
     "darwin"
+  ],
+  "cpu": [
+    "arm64"
   ],
   "type": "module",
   "scripts": {

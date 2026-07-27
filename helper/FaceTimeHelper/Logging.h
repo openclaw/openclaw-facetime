@@ -4,6 +4,8 @@
 //
 //  Created by Samer Shihabi on 11/29/20.
 //  Copyright © 2026 OpenClaw FaceTime contributors. All rights reserved.
+//  Adapted and modified from the Apache-2.0 BlueBubbles helper.
+//  See THIRD_PARTY_NOTICES.md.
 //
 #include <os/log.h>
 #ifndef Logging_h
