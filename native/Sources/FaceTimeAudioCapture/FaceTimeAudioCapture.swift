@@ -807,6 +807,18 @@ private struct FaceTimeAudioCapture {
             processObjectIDs: [currentProcess.objectID], lifecycle: lifecycle)
           try replacement.start()
           taps.append(replacement)
+        } catch {
+          if lifecycle.fail(error) {
+            fputs(
+              "facetime-audio-capture: fatal-safety-retained: \(error.localizedDescription)\n",
+              stderr)
+          }
+          try await waitForTerminationSignal(
+            lifecycle,
+            process: currentProcess,
+            requestedNames: requestedNames,
+            taps: taps)
+          return
         }
       }
       fputs(
