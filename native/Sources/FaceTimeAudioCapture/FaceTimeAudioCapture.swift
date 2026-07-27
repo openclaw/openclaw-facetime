@@ -799,14 +799,28 @@ private struct FaceTimeAudioCapture {
           }
           break
         } catch CaptureError.audioOwnerChanged {
-          currentProcess = try await waitForActiveOwner(
-            requestedNames: requestedNames,
-            processNames: arguments.processNames,
-            timeout: .seconds(3))
-          let replacement = try ProcessTap(
-            processObjectIDs: [currentProcess.objectID], lifecycle: lifecycle)
-          try replacement.start()
-          taps.append(replacement)
+          do {
+            currentProcess = try await waitForActiveOwner(
+              requestedNames: requestedNames,
+              processNames: arguments.processNames,
+              timeout: .seconds(3))
+            let replacement = try ProcessTap(
+              processObjectIDs: [currentProcess.objectID], lifecycle: lifecycle)
+            try replacement.start()
+            taps.append(replacement)
+          } catch {
+            if lifecycle.fail(error) {
+              fputs(
+                "facetime-audio-capture: fatal-safety-retained: \(error.localizedDescription)\n",
+                stderr)
+            }
+            try await waitForTerminationSignal(
+              lifecycle,
+              process: currentProcess,
+              requestedNames: requestedNames,
+              taps: taps)
+            return
+          }
         } catch {
           if lifecycle.fail(error) {
             fputs(
