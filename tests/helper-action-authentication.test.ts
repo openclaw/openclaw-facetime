@@ -5,30 +5,36 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("FaceTime helper action authentication", () => {
-  it("rejects same-session replay and envelopes captured before reconnect", () => {
-    const outputDir = mkdtempSync(path.join(tmpdir(), "facetime-helper-auth."));
-    const binary = path.join(outputDir, "action-auth-tests");
-    try {
-      execFileSync("/usr/bin/clang", [
-        "-fobjc-arc",
-        "-framework",
-        "Foundation",
-        "helper/FaceTimeHelper/ActionAuthentication.m",
-        "helper/tests/ActionAuthenticationTests.m",
-        "-o",
-        binary,
-      ]);
-      expect(() => execFileSync(binary)).not.toThrow();
-    } finally {
-      if (existsSync("/usr/bin/trash")) {
-        execFileSync("/usr/bin/trash", [outputDir]);
-      } else {
-        execFileSync("/usr/bin/python3", [
-          "-c",
-          "import shutil, sys; shutil.rmtree(sys.argv[1])",
-          outputDir,
+  it(
+    "rejects same-session replay and envelopes captured before reconnect",
+    { timeout: 20_000 },
+    () => {
+      const outputDir = mkdtempSync(path.join(tmpdir(), "facetime-helper-auth."));
+      const binary = path.join(outputDir, "action-auth-tests");
+      try {
+        // Cold macOS CI compiles this native harness inside the test, so allow
+        // toolchain startup without weakening any authentication assertion.
+        execFileSync("/usr/bin/clang", [
+          "-fobjc-arc",
+          "-framework",
+          "Foundation",
+          "helper/FaceTimeHelper/ActionAuthentication.m",
+          "helper/tests/ActionAuthenticationTests.m",
+          "-o",
+          binary,
         ]);
+        expect(() => execFileSync(binary)).not.toThrow();
+      } finally {
+        if (existsSync("/usr/bin/trash")) {
+          execFileSync("/usr/bin/trash", [outputDir]);
+        } else {
+          execFileSync("/usr/bin/python3", [
+            "-c",
+            "import shutil, sys; shutil.rmtree(sys.argv[1])",
+            outputDir,
+          ]);
+        }
       }
-    }
-  });
+    },
+  );
 });
