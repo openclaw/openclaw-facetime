@@ -139,11 +139,22 @@ export class FaceTimeHelperSupervisor {
     if (!target || !state) {
       return;
     }
+    const staleProcessId = processId > 0 ? processId : undefined;
+    const wasStale = state.stale;
+    // A stale helper reconnects every five seconds until its host app exits.
+    // Treat the whole stale episode as one operator action so reconnects from
+    // the app or its services cannot flood logs. An identical callback also
+    // keeps the existing process-exit monitor's original deadline.
+    if (state.stale && state.staleProcessId === staleProcessId) {
+      return;
+    }
     state.connected = false;
     state.stale = true;
-    state.staleProcessId = processId > 0 ? processId : undefined;
+    state.staleProcessId = staleProcessId;
     state.lastError = `Restart ${target} to load the updated OpenClaw helper`;
-    this.params.logger.warn(`[facetime] ${state.lastError}`);
+    if (!wasStale) {
+      this.params.logger.warn(`[facetime] ${state.lastError}`);
+    }
     if (processId > 0) {
       this.#scheduleStaleProcessCheck(target, processId);
     } else {

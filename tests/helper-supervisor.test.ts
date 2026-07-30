@@ -256,6 +256,54 @@ describe("FaceTime helper supervisor", () => {
     supervisor.stop();
   });
 
+  it("warns once while stale helper processes keep reconnecting", () => {
+    vi.useFakeTimers();
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const supervisor = new FaceTimeHelperSupervisor({
+      pluginRoot: "/tmp/facetime",
+      logger,
+      runCommandWithTimeout: vi.fn() as any,
+      connectedBundles: () => [],
+      targetAvailable: (target) => target === "FaceTime",
+      processAlive: () => true,
+      initialGraceMs: 10_000,
+      retryDelaysMs: [1_000],
+      connectionGraceMs: 0,
+    });
+
+    supervisor.start();
+    supervisor.stale("com.apple.FaceTime", 1234);
+    supervisor.stale("com.apple.FaceTime", 1234);
+    supervisor.stale("com.apple.FaceTime.FTConversationService", 1234);
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenLastCalledWith(
+      "[facetime] Restart FaceTime to load the updated OpenClaw helper",
+    );
+    expect(supervisor.status()).toContainEqual(
+      expect.objectContaining({
+        target: "FaceTime",
+        stale: true,
+        staleProcessId: 1234,
+        retryScheduled: true,
+      }),
+    );
+
+    supervisor.stale("com.apple.FaceTime", 5678);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    expect(supervisor.status()).toContainEqual(
+      expect.objectContaining({
+        target: "FaceTime",
+        staleProcessId: 5678,
+      }),
+    );
+
+    supervisor.connected("com.apple.FaceTime");
+    supervisor.stale("com.apple.FaceTime", 9012);
+    expect(logger.warn).toHaveBeenCalledTimes(2);
+    supervisor.stop();
+  });
+
   it("preserves the stale-process monitor when injection finishes concurrently", async () => {
     vi.useFakeTimers();
     let finishInjection:
