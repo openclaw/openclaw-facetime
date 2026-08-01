@@ -213,6 +213,31 @@ describe("FaceTime runtime call sequencing", () => {
     await runtime.stop();
   });
 
+  it("routes a realtime caller hangup request to the current carrier", async () => {
+    const talk = createTalkDriver({});
+    let requestHangup: (() => Promise<void>) | undefined;
+    mocks.startTalk.mockImplementationOnce(
+      async (params: { onHangupRequested(): Promise<void> }) => {
+        requestHangup = params.onHangupRequested;
+        return talk;
+      },
+    );
+    const runtime = await createRuntime();
+
+    mocks.helperParams?.onMessage(incomingCall(1));
+    await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
+    expect(requestHangup).toBeTypeOf("function");
+
+    await requestHangup?.();
+
+    expect(talk.suspendMedia).toHaveBeenCalledWith("caller-requested-hangup");
+    expect(mocks.helper.safetyMute).toHaveBeenCalledWith("call-1");
+    expect(mocks.helper.leaveCall).toHaveBeenCalledWith("call-1");
+    expect(talk.close).toHaveBeenCalledWith("caller-requested-hangup");
+    expect((await runtime.status()).calls).toEqual([]);
+    await runtime.stop();
+  });
+
   it("does not answer a call that ends while native suppression is starting", async () => {
     mocks.startTalk.mockImplementationOnce(
       async (params: { signal?: AbortSignal }) =>

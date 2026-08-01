@@ -297,11 +297,11 @@ private func inputDeviceNames(_ process: AudioProcess) throws -> [String] {
   }
 }
 
-private func validatePhysicalOutputRoute(_ process: AudioProcess) throws {
+private func outputRouteDevices(_ process: AudioProcess) throws -> [OpenClawOutputRouteDevice] {
   let outputDevices = try process.objectID.readObjectIDs(
     kAudioProcessPropertyDevices,
     scope: kAudioObjectPropertyScopeOutput)
-  let descriptions = try outputDevices.map { device -> (String, Bool) in
+  return try outputDevices.map { device in
     let name = try device.readString(kAudioObjectPropertyName)
     let objectClass: AudioClassID = try device.read(
       kAudioObjectPropertyClass,
@@ -313,11 +313,7 @@ private func validatePhysicalOutputRoute(_ process: AudioProcess) throws {
       && transport != kAudioDeviceTransportTypeVirtual
       && !name.localizedCaseInsensitiveContains("BlackHole")
       && !name.hasPrefix("OpenClaw-")
-    return (name, physical)
-  }
-  guard !descriptions.isEmpty && descriptions.allSatisfy(\.1) else {
-    throw CaptureError.outputRouteMismatch(
-      "\(process.name) pid=\(process.pid)", descriptions.map(\.0))
+    return OpenClawOutputRouteDevice(name: name, physical: physical)
   }
 }
 
@@ -387,20 +383,30 @@ private func waitForActiveOwner(
   throw CaptureError.audioProcessNotFound(processNames)
 }
 
-private func waitForOpenClawMicrophoneRoute(
+private func waitForOpenClawRoutes(
   _ process: AudioProcess,
   requestedNames: Set<String>,
   phase: OpenClawInputRoutePhase
 ) async throws {
   let deadline = ContinuousClock.now + .seconds(10)
-  var names: [String] = []
+  var inputNames: [String] = []
+  var outputDecision = OpenClawOutputRouteDecision.retry
   while ContinuousClock.now < deadline {
     try requireExpectedActiveOwner(process, requestedNames: requestedNames)
-    try validatePhysicalOutputRoute(process)
-    names = (try? inputDeviceNames(process)) ?? []
-    switch decideOpenClawInputRoute(names, phase: phase) {
+    outputDecision = decideOpenClawOutputRoute(try outputRouteDevices(process))
+    switch outputDecision {
+    case .ready, .retry:
+      break
+    case .fail(let names):
+      throw CaptureError.outputRouteMismatch(
+        "\(process.name) pid=\(process.pid)", names)
+    }
+    inputNames = (try? inputDeviceNames(process)) ?? []
+    switch decideOpenClawInputRoute(inputNames, phase: phase) {
     case .ready:
-      return
+      if outputDecision == .ready {
+        return
+      }
     case .retry:
       break
     case .fail(let failedNames):
@@ -409,7 +415,11 @@ private func waitForOpenClawMicrophoneRoute(
     }
     try await Task.sleep(for: .milliseconds(100))
   }
-  throw CaptureError.inputRouteMismatch("\(process.name) pid=\(process.pid)", names)
+  if outputDecision == .retry {
+    throw CaptureError.outputRouteMismatch("\(process.name) pid=\(process.pid)", [])
+  }
+  throw CaptureError.inputRouteMismatch(
+    "\(process.name) pid=\(process.pid)", inputNames)
 }
 
 private final class ConverterInput: @unchecked Sendable {
@@ -666,7 +676,7 @@ private func waitForTerminationSignal(
             processObjectIDs: [activeProcess.objectID], lifecycle: lifecycle)
           try replacement.start()
           taps.append(replacement)
-          try await waitForOpenClawMicrophoneRoute(
+          try await waitForOpenClawRoutes(
             activeProcess,
             requestedNames: requestedNames,
             phase: .steadyState)
@@ -681,23 +691,33 @@ private func waitForTerminationSignal(
             "facetime-audio-capture: rebound process tap to \(activeProcess.name) pid=\(activeProcess.pid)\n",
             stderr)
         }
+        let outputDecision = decideOpenClawOutputRoute(try outputRouteDevices(currentProcess))
+        switch outputDecision {
+        case .ready, .retry:
+          break
+        case .fail(let names):
+          throw CaptureError.outputRouteMismatch(
+            "\(currentProcess.name) pid=\(currentProcess.pid)", names)
+        }
         let inputNames = (try? inputDeviceNames(currentProcess)) ?? []
-        switch decideOpenClawInputRoute(inputNames, phase: .steadyState) {
+        let inputDecision = decideOpenClawInputRoute(inputNames, phase: .steadyState)
+        switch inputDecision {
         case .ready:
           break
         case .retry:
-          // Applying FaceTime transmission state can briefly clear the
-          // process device list. Keep the muted tap active while the expected
-          // OpenClaw-Mic route returns; a real wrong route still fails at once.
-          try await waitForOpenClawMicrophoneRoute(
-            currentProcess,
-            requestedNames: requestedNames,
-            phase: .steadyState)
+          break
         case .fail(let names):
           throw CaptureError.inputRouteMismatch(
             "\(currentProcess.name) pid=\(currentProcess.pid)", names)
         }
-        try validatePhysicalOutputRoute(currentProcess)
+        if inputDecision == .retry || outputDecision == .retry {
+          // Applying transmission state can briefly clear either process
+          // device list. Retain the muted tap while both expected routes return.
+          try await waitForOpenClawRoutes(
+            currentProcess,
+            requestedNames: requestedNames,
+            phase: .steadyState)
+        }
       } catch {
         if lifecycle.fail(error) {
           fputs("facetime-audio-capture: fatal-safety-retained: \(error.localizedDescription)\n", stderr)
@@ -787,7 +807,7 @@ private struct FaceTimeAudioCapture {
       var currentProcess = selected[0]
       while true {
         do {
-          try await waitForOpenClawMicrophoneRoute(
+          try await waitForOpenClawRoutes(
             currentProcess,
             requestedNames: requestedNames,
             phase: .initialReadiness)

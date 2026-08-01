@@ -737,6 +737,12 @@ export async function createFaceTimeRuntime(params: {
           senderIsOwner: call.senderIsOwner,
           captureBinary,
           signal: call.lifecycleAbort.signal,
+          async onHangupRequested() {
+            const closed = await attemptCarrierHangup(call, "caller-requested-hangup");
+            if (!closed) {
+              throw new Error(`carrier hangup pending for ${call.callUUID}; retry scheduled`);
+            }
+          },
           async onFailure(error) {
             // Ringing calls have not joined a carrier yet, so their tap can close
             // immediately. Active calls retain it until carrier hangup is proven.

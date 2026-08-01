@@ -41,7 +41,9 @@ All required checks must pass. At call time, the native tap first suppresses the
 7. Speak from the iPhone and confirm a contextual response.
 8. Ask a tool-backed question and confirm agent consultation.
 9. Interrupt the agent and confirm queued speech stops promptly.
-10. Hang up and verify there is no active call and no capture, SoX, or caffeinate child remains.
+10. Ask the agent to hang up. Verify the realtime `facetime_end_call` control
+    runs without an agent consult, then confirm there is no active call and no
+    capture, SoX, or caffeinate child remains.
 
 ## FaceTime audio acceptance
 

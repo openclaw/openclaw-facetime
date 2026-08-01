@@ -398,6 +398,11 @@ Hang up through OpenClaw:
 openclaw gateway call facetime.hangup --json
 ```
 
+During a live realtime call, the authenticated caller can also say “hang up”
+or “end this call.” The realtime voice model receives a call-scoped control
+that ends the current carrier directly, without starting a separate agent turn
+or asking for confirmation.
+
 ## Agent tool and skill
 
 The plugin bundles a `facetime` skill and registers the `facetime_call` tool so

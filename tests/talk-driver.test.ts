@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
   consult: vi.fn(),
   resolveBootstrapContext: vi.fn(),
+  hangupRequested: vi.fn(async () => {}),
   senderAuthVersion: 1 as number | undefined,
   pump: {
     suppressionReady: vi.fn(async () => {}),
@@ -46,9 +47,15 @@ const mocks = vi.hoisted(() => ({
           clearAudio(): void;
         };
         instructions?: string;
+        tools?: Array<{ name: string; description: string }>;
         onEvent(event: { direction: "client" | "server"; type: string; detail?: string }): void;
         onReady(): void;
-        onToolCall(event: { itemId: string; callId: string; name: string; args: unknown }): void;
+        onToolCall(event: {
+          itemId: string;
+          callId: string;
+          name: string;
+          args: unknown;
+        }): void | Promise<void>;
       },
 }));
 
@@ -76,7 +83,12 @@ vi.mock("openclaw/plugin-sdk/realtime-voice", () => ({
     provider: { id: "openai" },
     providerConfig: {},
   })),
-  resolveRealtimeVoiceAgentConsultTools: vi.fn(() => []),
+  resolveRealtimeVoiceAgentConsultTools: vi.fn(
+    (policy: string, customTools: Array<{ name: string }> = []) => [
+      ...(policy === "none" ? [] : [{ name: "openclaw_agent_consult" }]),
+      ...customTools,
+    ],
+  ),
   resolveRealtimeVoiceAgentConsultToolsAllow: vi.fn(() => []),
 }));
 
@@ -128,6 +140,7 @@ function startParams(overrides: Record<string, unknown> = {}) {
     senderId: "caller@example.com",
     senderIsOwner: true,
     captureBinary: "/capture",
+    onHangupRequested: mocks.hangupRequested,
     ...overrides,
   };
 }
@@ -419,6 +432,67 @@ describe("FaceTime talk driver lifecycle", () => {
     driver.activate();
 
     expect(mocks.bridge.triggerGreeting).toHaveBeenCalledOnce();
+  });
+
+  it("ends the current call directly without consulting the agent", async () => {
+    await startReadyFaceTimeTalkDriver();
+
+    expect(mocks.sessionParams?.tools?.map((tool) => tool.name)).toEqual([
+      "openclaw_agent_consult",
+      "facetime_end_call",
+    ]);
+    expect(mocks.sessionParams?.instructions).toContain(
+      "call facetime_end_call immediately",
+    );
+
+    await mocks.sessionParams?.onToolCall({
+      itemId: "item-hangup",
+      callId: "provider-hangup",
+      name: "facetime_end_call",
+      args: {},
+    });
+
+    expect(mocks.bridge.submitToolResult).toHaveBeenCalledWith(
+      "provider-hangup",
+      {
+        status: "ending",
+        message: "The current FaceTime call is ending. Do not speak another response.",
+      },
+      { suppressResponse: true },
+    );
+    expect(mocks.hangupRequested).toHaveBeenCalledOnce();
+    expect(mocks.consult).not.toHaveBeenCalled();
+  });
+
+  it("keeps direct hangup available when agent consult tools are disabled", async () => {
+    await startReadyFaceTimeTalkDriver(
+      startParams({
+        config: resolveFaceTimeConfig({
+          whitelistHandles: ["caller@example.com"],
+          realtime: { toolPolicy: "none" },
+        }),
+      }),
+    );
+
+    expect(mocks.sessionParams?.tools?.map((tool) => tool.name)).toEqual([
+      "facetime_end_call",
+    ]);
+  });
+
+  it("deduplicates repeated realtime hangup tool events", async () => {
+    await startReadyFaceTimeTalkDriver();
+    const event = {
+      itemId: "item-hangup",
+      callId: "provider-hangup",
+      name: "facetime_end_call",
+      args: {},
+    };
+
+    await mocks.sessionParams?.onToolCall(event);
+    await mocks.sessionParams?.onToolCall(event);
+
+    expect(mocks.hangupRequested).toHaveBeenCalledOnce();
+    expect(mocks.consult).not.toHaveBeenCalled();
   });
 
   it("makes concurrent close callers join the same cleanup", async () => {

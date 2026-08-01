@@ -18,6 +18,7 @@ import {
   resolveRealtimeVoiceAgentConsultTools,
   resolveRealtimeVoiceAgentConsultToolsAllow,
   type RealtimeVoiceBridgeSession,
+  type RealtimeVoiceTool,
   type RealtimeVoiceToolCallEvent,
   type TalkEvent,
   type TalkEventInput,
@@ -64,6 +65,17 @@ const REALTIME_READY_TIMEOUT_MS = 15_000;
 // FaceTime carries audio but is not an OpenClaw message channel. Approval
 // followups validate this field, so use the always-registered internal channel.
 const AGENT_CONSULT_MESSAGE_PROVIDER = "webchat";
+const FACETIME_END_CALL_TOOL_NAME = "facetime_end_call";
+const FACETIME_END_CALL_TOOL: RealtimeVoiceTool = {
+  type: "function",
+  name: FACETIME_END_CALL_TOOL_NAME,
+  description:
+    "Immediately end the current FaceTime call when the caller clearly asks to hang up, end, leave, or disconnect this call. Do not use this to cancel background work.",
+  parameters: {
+    type: "object",
+    properties: {},
+  },
+};
 
 function pushRecent(events: TalkEvent[], event: TalkEvent | undefined): void {
   if (!event) {
@@ -98,6 +110,11 @@ function buildRealtimeInstructions(params: {
   bootstrapContext: string | undefined;
   toolPolicy: FaceTimeConfig["realtime"]["toolPolicy"];
 }): string {
+  const callControlInstructions = [
+    "Call control:",
+    `- When the caller asks you to hang up, end, leave, or disconnect the current FaceTime call, call ${FACETIME_END_CALL_TOOL_NAME} immediately.`,
+    `- Never delegate a current-call hangup request to ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME}, ask for confirmation, or say that you will check.`,
+  ].join("\n");
   const proxyInstructions =
     params.toolPolicy === "none"
       ? undefined
@@ -117,7 +134,12 @@ function buildRealtimeInstructions(params: {
         ]
           .filter(Boolean)
           .join("\n");
-  return [params.instructions?.trim(), params.bootstrapContext?.trim(), proxyInstructions]
+  return [
+    params.instructions?.trim(),
+    params.bootstrapContext?.trim(),
+    callControlInstructions,
+    proxyInstructions,
+  ]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -155,6 +177,7 @@ export async function startFaceTimeTalkDriver(params: {
   senderIsOwner: true;
   captureBinary: string;
   signal?: AbortSignal;
+  onHangupRequested: () => Promise<void>;
   onFailure?: (error: Error) => boolean | Promise<boolean>;
 }): Promise<FaceTimeTalkDriver> {
   if (params.signal?.aborted) {
@@ -194,6 +217,7 @@ export async function startFaceTimeTalkDriver(params: {
   let responseStartTimestampMs: number | undefined;
   let responsePlaybackStartMs: number | undefined;
   let responseGenerationDone = false;
+  let hangupRequested = false;
   const pendingAgentConsults = new Map<
     string,
     {
@@ -450,11 +474,67 @@ export async function startFaceTimeTalkDriver(params: {
       })();
     }
   };
-  const handleToolCall = (event: RealtimeVoiceToolCallEvent) => {
+  const submitHangupToolResult = async (event: RealtimeVoiceToolCallEvent) => {
+    const callId = event.callId || event.itemId;
+    const turnId = ensureTurn();
+    const result = {
+      status: "ending",
+      message: "The current FaceTime call is ending. Do not speak another response.",
+    };
+    remember({
+      type: "tool.call",
+      turnId,
+      itemId: event.itemId,
+      callId,
+      payload: { name: event.name, args: event.args },
+    });
+    try {
+      const options =
+        bridge?.bridge.supportsToolResultSuppression === false
+          ? undefined
+          : { suppressResponse: true };
+      await bridge?.submitToolResult(callId, result, options);
+      remember({
+        type: "tool.result",
+        turnId,
+        callId,
+        payload: { name: event.name, result },
+        final: true,
+      });
+    } catch (error) {
+      const message = formatErrorMessage(error);
+      params.logger.debug?.(`[facetime] hangup tool result ignored: ${message}`);
+      remember({
+        type: "tool.error",
+        turnId,
+        callId,
+        payload: { name: event.name, error: message },
+        final: true,
+      });
+    }
+  };
+  const handleToolCall = async (event: RealtimeVoiceToolCallEvent) => {
     if (stopped || mediaSuspended) {
       return;
     }
     const callId = event.callId || event.itemId;
+    if (event.name === FACETIME_END_CALL_TOOL_NAME) {
+      const shouldRequestHangup = !hangupRequested;
+      hangupRequested = true;
+      // Complete the provider tool lifecycle before carrier teardown closes the
+      // realtime bridge. Duplicate provider events must not hang up twice.
+      await submitHangupToolResult(event);
+      if (shouldRequestHangup) {
+        try {
+          await params.onHangupRequested();
+        } catch (error) {
+          params.logger.warn?.(
+            `[facetime] caller-requested hangup remains pending: ${formatErrorMessage(error)}`,
+          );
+        }
+      }
+      return;
+    }
     if (event.name !== REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME) {
       submitToolError(event, `Tool "${event.name}" not available`);
       return;
@@ -675,7 +755,9 @@ export async function startFaceTimeTalkDriver(params: {
           triggerGreetingOnReady: false,
           initialGreetingInstructions: "Greet the caller briefly and say you are listening.",
           markStrategy: "ack-immediately",
-          tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy),
+          tools: resolveRealtimeVoiceAgentConsultTools(params.config.realtime.toolPolicy, [
+            FACETIME_END_CALL_TOOL,
+          ]),
           audioSink: {
             isOpen: () => !stopped && !mediaSuspended,
             sendAudio(audio) {
