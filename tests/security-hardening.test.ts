@@ -9,14 +9,14 @@ describe("privileged FaceTime support boundaries", () => {
     const ensureHelperKey = readFileSync("scripts/ensure-helper-ipc-key.sh", "utf8");
     const injectHelper = readFileSync("scripts/inject-helper.sh", "utf8");
     const helperSource = readFileSync("helper/FaceTimeHelper/FaceTimeHelper.m", "utf8");
-    const actionAuthSource = readFileSync(
-      "helper/FaceTimeHelper/ActionAuthentication.m",
+    const connectionAuthSource = readFileSync(
+      "helper/FaceTimeHelper/ConnectionAuthentication.m",
       "utf8",
     );
 
     expect(buildHelper).not.toContain("OPENCLAW_FACETIME_HELPER_TOKEN");
     expect(compileHelper).not.toContain("OPENCLAW_FACETIME_HELPER_TOKEN");
-    expect(compileHelper).toContain("ActionAuthentication.m");
+    expect(compileHelper).toContain("ConnectionAuthentication.m");
     expect(buildHelper).toContain('scripts/ensure-helper-ipc-key.sh"');
     expect(buildHelper).toContain("/opt/homebrew/opt/openclaw-facetime/libexec");
     expect(buildHelper).toContain('candidate_build_id="${native_dir}/FaceTimeHelper.build-id"');
@@ -35,16 +35,16 @@ describe("privileged FaceTime support boundaries", () => {
     expect(injectHelper).toContain("OpenClawFaceTimeHelperInitialized");
     expect(injectHelper).toContain("ready && *ready == 1");
     expect(injectHelper).toContain("LLDB did not confirm that FaceTimeHelper.dylib initialized");
-    expect(actionAuthSource).toContain('![_session isEqualToString:session]');
-    expect(actionAuthSource).toContain("O_NOFOLLOW");
-    expect(actionAuthSource).toContain("metadata.st_uid != getuid()");
-    expect(actionAuthSource).toContain(
+    expect(connectionAuthSource).toContain("O_NOFOLLOW");
+    expect(connectionAuthSource).toContain("metadata.st_uid != getuid()");
+    expect(connectionAuthSource).toContain(
       "(S_IRWXU | S_IRWXG | S_IRWXO)) != (S_IRUSR | S_IWUSR)",
     );
-    expect(actionAuthSource).not.toContain("removeObject");
+    expect(connectionAuthSource).toContain("server-to-helper");
+    expect(connectionAuthSource).toContain("helper-to-server");
     expect(helperSource).toContain("OpenClawFaceTimeLoadHelperTokenForImageAddress");
     expect(helperSource).toContain("OpenClawFaceTimeHelperInitialized = 1");
-    expect(helperSource).toContain("Replayed FaceTime helper action");
+    expect(connectionAuthSource).toContain("sequence != _incomingSequence + 1");
     expect(helperSource).not.toContain("Received raw json");
     expect(helperSource).not.toContain("Message received: %{public}@, %{public}@");
   });
@@ -92,11 +92,12 @@ describe("privileged FaceTime support boundaries", () => {
     expect(verifyRelease).toContain("REQUIRE_NOTARIZED_GATEKEEPER");
     expect(verifyRelease).toContain("codesign --verify --strict --check-notarization");
     expect(verifyRelease).toContain('-R="notarized"');
-    expect(releaseWorkflow).toContain("EXPECTED_TEAM_ID: ${{ vars.MAC_RELEASE_TEAM_ID }}");
-    expect(releaseWorkflow).toContain('REQUIRE_NOTARIZATION_RECEIPT: "1"');
-    expect(releaseWorkflow).toContain('REQUIRE_NOTARIZED_GATEKEEPER: "1"');
-    expect(releaseWorkflow).toContain("ref: refs/tags/${{ inputs.tag }}");
-    expect(releaseWorkflow).not.toContain("HOMEBREW_TAP_TOKEN");
+    expect(releaseWorkflow).toContain("Developer ID Application: OpenClaw Foundation ($team)");
+    expect(releaseWorkflow).toContain("EXPECTED_TEAM_ID: FWJYW4S8P8");
+    expect(releaseWorkflow).toContain("REQUIRE_NOTARIZATION_RECEIPT=1");
+    expect(releaseWorkflow).toContain("REQUIRE_NOTARIZED_GATEKEEPER=1");
+    expect(releaseWorkflow).toContain("ref: ${{ needs.validate.outputs.tag }}");
+    expect(releaseWorkflow).toContain("HOMEBREW_TAP_TOKEN");
     expect(updateHomebrew).toContain(
       'tap_repository="${HOMEBREW_TAP_REPOSITORY:-openclaw/homebrew-tap}"',
     );

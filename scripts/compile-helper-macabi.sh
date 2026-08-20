@@ -17,6 +17,7 @@ configuration="${FACETIME_HELPER_CONFIGURATION:-debug}"
 codesign_identity="${CODESIGN_IDENTITY:--}"
 build_dir="$(mktemp -d "${TMPDIR:-/tmp}/openclaw-facetime-helper.XXXXXX")"
 build_header="${build_dir}/OpenClawFaceTimeHelperBuild.h"
+endpoint_contract="${repo_root}/helper-endpoint.json"
 helper_arches=(arm64e arm64)
 
 cleanup() {
@@ -40,7 +41,11 @@ fi
 
 build_id="$(FACETIME_HELPER_CONFIGURATION="${configuration}" \
   "${repo_root}/scripts/helper-build-id.sh")"
-printf '#define OPENCLAW_FACETIME_HELPER_BUILD_ID "%s"\n' "${build_id}" > "${build_header}"
+endpoint_host="$(node -e 'const c=require(process.argv[1]); process.stdout.write(c.host)' "${endpoint_contract}")"
+endpoint_base_port="$(node -e 'const c=require(process.argv[1]); process.stdout.write(String(c.basePort))' "${endpoint_contract}")"
+endpoint_max_port="$(node -e 'const c=require(process.argv[1]); process.stdout.write(String(c.maxPort))' "${endpoint_contract}")"
+printf '#define OPENCLAW_FACETIME_HELPER_BUILD_ID "%s"\n#define OPENCLAW_FACETIME_HELPER_HOST @"%s"\n#define OPENCLAW_FACETIME_HELPER_BASE_PORT %s\n#define OPENCLAW_FACETIME_HELPER_MAX_PORT %s\n' \
+  "${build_id}" "${endpoint_host}" "${endpoint_base_port}" "${endpoint_max_port}" > "${build_header}"
 
 compile_flags=()
 if [[ "${configuration}" == "debug" ]]; then
@@ -67,11 +72,9 @@ for helper_arch in "${helper_arches[@]}"; do
     -I "${helper_dir}/FaceTimeHelper/FaceTime" \
     -I "${helper_dir}/FaceTimeHelper/ZKSwizzle" \
     -iframework /System/Library/PrivateFrameworks \
-    "${helper_dir}/FaceTimeHelper/ActionAuthentication.m" \
+    "${helper_dir}/FaceTimeHelper/ConnectionAuthentication.m" \
     "${helper_dir}/FaceTimeHelper/FaceTimeHelper.m" \
     "${helper_dir}/FaceTimeHelper/NetworkController.m" \
-    "${helper_dir}/FaceTimeHelper/CTBlockDescription.m" \
-    "${helper_dir}/FaceTimeHelper/ZKSwizzle/ZKSwizzle.m" \
     -framework Foundation \
     -framework CoreServices \
     -framework Security \

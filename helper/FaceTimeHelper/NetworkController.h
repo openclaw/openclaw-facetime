@@ -14,6 +14,8 @@
 
 // Block typedefs
 typedef void (^MessageBlock)(id,NSString*);
+typedef void (^ConnectionReadyBlock)(id);
+typedef NSDictionary* (^OutgoingTransformBlock)(NSDictionary*);
 
 @interface NetworkController : NSObject<NSStreamDelegate>
 
@@ -24,8 +26,12 @@ typedef void (^MessageBlock)(id,NSString*);
 - (void)connect;
 - (void)disconnect;
 - (void)sendMessage:(NSDictionary*)message;
+- (void)sendControlMessage:(NSDictionary*)message;
+- (void)failConnection;
 
 @property (copy) MessageBlock messageReceivedBlock;
+@property (copy) ConnectionReadyBlock connectionReadyBlock;
+@property (copy) OutgoingTransformBlock outgoingTransformBlock;
 
 @end
 #endif /* NetworkController_h */

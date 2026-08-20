@@ -85,10 +85,11 @@ expected_listing="$(printf '%s\n' \
   LICENSE \
   THIRD_PARTY_NOTICES.md \
   VERSION \
-  facetime-audio-capture)"
+  facetime-audio-capture \
+  native-protocol.env)"
 actual_listing="$(/usr/bin/zipinfo -1 "${archive_path}" | LC_ALL=C sort)"
 if [[ "${actual_listing}" != "${expected_listing}" ]]; then
-  echo "Release archive contents do not match the six-file contract" >&2
+  echo "Release archive contents do not match the seven-file contract" >&2
   exit 1
 fi
 
@@ -98,6 +99,7 @@ required_files=(
   FaceTimeHelper.dylib
   FaceTimeHelper.build-id
   VERSION
+  native-protocol.env
   LICENSE
   THIRD_PARTY_NOTICES.md
 )
@@ -128,6 +130,10 @@ version="$("${repo_root}/scripts/native-version.sh")"
 archive_version="$(tr -d '[:space:]' < "${check_dir}/VERSION")"
 if [[ "${archive_version}" != "${version}" ]]; then
   echo "Release archive version does not match version.env" >&2
+  exit 1
+fi
+if [[ "$(tr -d '[:space:]' < "${check_dir}/native-protocol.env")" != "NATIVE_PROTOCOL_VERSION=1" ]]; then
+  echo "Release archive contains an unsupported native protocol version" >&2
   exit 1
 fi
 if [[ ! -x "${check_dir}/facetime-audio-capture" ]]; then

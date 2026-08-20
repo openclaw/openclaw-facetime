@@ -8,12 +8,15 @@ class OpenclawFacetime < Formula
   depends_on arch: :arm64
   depends_on macos: :sonoma
 
+  skip_clean "libexec/facetime-audio-capture", "libexec/FaceTimeHelper.dylib"
+
   def install
     odie "openclaw-facetime requires macOS 14.4 or later" if MacOS.version < "14.4"
     libexec.install "facetime-audio-capture"
     libexec.install "FaceTimeHelper.dylib"
     libexec.install "FaceTimeHelper.build-id"
     libexec.install "VERSION"
+    libexec.install "native-protocol.env"
     libexec.install "LICENSE"
     libexec.install "THIRD_PARTY_NOTICES.md"
   end
@@ -35,10 +38,13 @@ class OpenclawFacetime < Formula
 
   test do
     assert_predicate libexec/"facetime-audio-capture", :executable?
-    assert_predicate libexec/"FaceTimeHelper.dylib", :exist?
+    assert_path_exists libexec/"FaceTimeHelper.dylib"
     assert_match(/\A[0-9a-f]{64}\n?\z/, (libexec/"FaceTimeHelper.build-id").read)
     assert_match version.to_s, (libexec/"VERSION").read
-    system "codesign", "--verify", "--strict", libexec/"facetime-audio-capture"
-    system "codesign", "--verify", "--strict", libexec/"FaceTimeHelper.dylib"
+    assert_equal "NATIVE_PROTOCOL_VERSION=1\n", (libexec/"native-protocol.env").read
+    system "/usr/bin/codesign", "--verify", "--strict", "--check-notarization",
+           "-R=notarized", libexec/"facetime-audio-capture"
+    system "/usr/bin/codesign", "--verify", "--strict", "--check-notarization",
+           "-R=notarized", libexec/"FaceTimeHelper.dylib"
   end
 end

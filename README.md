@@ -1,6 +1,7 @@
 # OpenClaw FaceTime
 
-This repository is the canonical FaceTime voice plugin for OpenClaw agents.
+This repository is the canonical native implementation and binary release for
+the FaceTime plugin in `openclaw/openclaw`.
 
 It combines call control, OpenClaw agent consultation, and the audio path proven
 on macOS 26.4:
@@ -22,10 +23,8 @@ and gives allowlisted callers the configured OpenClaw agent's owner-level
 workspace and tools. Read the [SIP requirement](#system-integrity-protection-requirement)
 and [access-control model](#identity-and-access-control) before enabling it.
 
-The source package is not published to npm yet. Install it from a reviewed local
-checkout. The package currently declares OpenClaw plugin API compatibility
-`>=2026.7.2-beta.4`; that compatibility declaration does not mean a particular
-OpenClaw beta has been promoted for production use.
+The TypeScript plugin is owned and distributed by `openclaw/openclaw`. This
+repository publishes only the signed native helpers consumed by that plugin.
 
 ## Requirements
 
@@ -47,9 +46,9 @@ FaceTime video uses FaceTime. On the live-tested macOS 26.4 route, FaceTime
 Audio uses Phone. Treat other macOS versions as unverified until both call types
 pass the live acceptance procedure.
 
-## Quick start from source
+## Native development
 
-Review the source, then clone, build, and link it into OpenClaw:
+Review the source, then clone and validate the native package:
 
 ```sh
 git clone https://github.com/openclaw/openclaw-facetime.git
@@ -58,8 +57,8 @@ corepack enable
 brew install sox
 pnpm install --frozen-lockfile
 pnpm build
-openclaw plugins install --link "$PWD" --force
-openclaw plugins enable facetime
+make native-archive
+make native-verify
 ```
 
 `--force` confirms that you reviewed and trust this arbitrary local source. It
@@ -121,7 +120,7 @@ Older local builds used `plugins.entries.facetime.config.audio` for duplex
 BlackHole routing. That property is retired. `openclaw doctor --fix` removes
 only that obsolete object and preserves the rest of the FaceTime configuration.
 
-## Build the audio path
+## Build the native audio path
 
 Build and sign the Core Audio process-tap helper:
 
@@ -129,7 +128,8 @@ Build and sign the Core Audio process-tap helper:
 pnpm build:capture
 ```
 
-OpenClaw installs npm plugins with lifecycle scripts disabled. On first plugin activation, the plugin checks for this helper and builds it from the packaged Swift source when missing. Xcode must therefore remain installed on the OpenClaw Mac. The explicit command above is useful for setup verification and development.
+Production installs use the signed and notarized archive. This command is for
+native development and produces an ad-hoc-signed local build.
 
 Install the pinned BlackHole v0.7.1 source as the paired OpenClaw driver:
 
@@ -164,18 +164,15 @@ The generated `OpenClawBridge.driver` is a separate modified build of GPL-3.0 Bl
 
 Do not commit or silently distribute the generated driver. Distribution requires compliance with BlackHole's GPL-3.0 terms, a separate license from Existential Audio, or a replacement driver with a compatible license.
 
-## Build the plugin
+## Build the TypeScript development harness
 
 ```sh
 pnpm build
 ```
 
-The persistent OpenClaw gateway now owns helper preparation and injection. On
-startup it builds the signed helper from packaged source when missing or stale,
-opens FaceTime and Phone in the background if needed, injects each process, and
-retries with bounded backoff whenever an authenticated helper disconnects.
-There is no separate LaunchAgent and no CocoaPods dependency, so plugin updates
-and removal cannot leave a stale helper service behind.
+The production TypeScript plugin lives in `openclaw/openclaw`. This repository
+retains a development harness so native protocol changes can be tested against
+their JavaScript peer before release.
 
 ### System Integrity Protection requirement
 
@@ -270,11 +267,9 @@ on the OpenClaw Mac with:
 brew install openclaw/tap/openclaw-facetime
 ```
 
-The plugin checks `OPENCLAW_FACETIME_NATIVE_DIR` first, then the Apple Silicon
-and Intel Homebrew prefixes. It uses the installed capture executable and
-stages the installed signed helper with a fresh per-machine authentication
-sidecar. Source checkouts still build locally when no packaged installation is
-available.
+The OpenClaw plugin uses the installed Homebrew prefix, validates native
+protocol version 1, and stages the signed helper with a fresh per-machine
+authentication sidecar. It does not compile native code from the plugin.
 
 Release engineering instructions are in `docs/RELEASING.md`. This pipeline does
 not bundle the GPL-derived audio driver, and it does not make the release

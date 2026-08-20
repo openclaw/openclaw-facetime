@@ -21,4 +21,7 @@ fi
   printf '%s  %s\n' \
     "$(shasum -a 256 "${repo_root}/scripts/compile-helper-macabi.sh" | awk '{print $1}')" \
     "scripts/compile-helper-macabi.sh"
+  printf '%s  %s\n' \
+    "$(shasum -a 256 "${repo_root}/helper-endpoint.json" | awk '{print $1}')" \
+    "helper-endpoint.json"
 } | shasum -a 256 | awk '{print $1}'

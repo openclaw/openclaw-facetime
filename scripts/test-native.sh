@@ -22,3 +22,10 @@ swiftc \
   -o "$build_dir/output-route-readiness-checks"
 
 "$build_dir/output-route-readiness-checks"
+
+swiftc \
+  "$repo_root/native/Sources/FaceTimeAudioCapture/FixedSlotRing.swift" \
+  "$repo_root/native/Checks/FixedSlotRingChecks.swift" \
+  -o "$build_dir/fixed-slot-ring-checks"
+
+"$build_dir/fixed-slot-ring-checks"

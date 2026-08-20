@@ -48,12 +48,15 @@ private enum CaptureError: LocalizedError {
       return "Core Audio returned an unsupported audio format."
     case .usageDescriptionMissing:
       return
-        "The capture helper is missing its embedded NSAudioCaptureUsageDescription. Run pnpm build:capture."
+        "The capture helper is missing its embedded NSAudioCaptureUsageDescription. Restart OpenClaw to rebuild the FaceTime plugin artifact."
     case .conversionFailed(let message):
       return "Audio conversion failed: \(message)"
     }
   }
 }
+
+private let captureQueueOverflowError = CaptureError.conversionFailed(
+  "bounded capture queue overflow")
 
 private struct Arguments {
   var checkOnly = false
@@ -431,6 +434,8 @@ private final class ConverterInput: @unchecked Sendable {
 }
 
 private final class PCMWriter: @unchecked Sendable {
+  private static let slotCount = 8
+  private static let slotFrames: AVAudioFrameCount = 8192
   private let targetFormat = AVAudioFormat(
     commonFormat: .pcmFormatInt16,
     sampleRate: outputSampleRate,
@@ -438,8 +443,24 @@ private final class PCMWriter: @unchecked Sendable {
     interleaved: true)!
   private let sourceFormat: AVAudioFormat
   private let converter: AVAudioConverter
+  private let slots: [AVAudioPCMBuffer]
+  private let available = DispatchSemaphore(value: PCMWriter.slotCount)
+  private let pendingLock = NSLock()
+  private let worker = DispatchQueue(label: "ai.openclaw.facetime-capture-writer")
+  private let pending = FixedSlotRing(capacity: PCMWriter.slotCount)
+  private var nextSlot = 0
+  private let onFailure: @Sendable (Error) -> Void
+  private lazy var workerSignal: DispatchSourceUserDataAdd = {
+    let source = DispatchSource.makeUserDataAddSource(queue: self.worker)
+    source.setEventHandler { [weak self] in self?.drainPending() }
+    source.resume()
+    return source
+  }()
 
-  init(streamDescription: AudioStreamBasicDescription) throws {
+  init(
+    streamDescription: AudioStreamBasicDescription,
+    onFailure: @escaping @Sendable (Error) -> Void
+  ) throws {
     var description = streamDescription
     guard let sourceFormat = AVAudioFormat(streamDescription: &description),
       let converter = AVAudioConverter(from: sourceFormat, to: self.targetFormat)
@@ -448,17 +469,81 @@ private final class PCMWriter: @unchecked Sendable {
     }
     self.sourceFormat = sourceFormat
     self.converter = converter
+    self.onFailure = onFailure
+    self.slots = try (0..<Self.slotCount).map { _ in
+      guard let buffer = AVAudioPCMBuffer(
+        pcmFormat: sourceFormat,
+        frameCapacity: Self.slotFrames)
+      else { throw CaptureError.invalidAudioFormat }
+      return buffer
+    }
+    _ = self.workerSignal
   }
 
-  func write(_ audioBufferList: UnsafePointer<AudioBufferList>) throws {
-    guard
-      let sourceBuffer = AVAudioPCMBuffer(
-        pcmFormat: self.sourceFormat,
-        bufferListNoCopy: audioBufferList,
-        deallocator: nil)
-    else {
-      throw CaptureError.invalidAudioFormat
+  func enqueue(_ audioBufferList: UnsafePointer<AudioBufferList>) -> Bool {
+    guard self.available.wait(timeout: .now()) == .success, self.pendingLock.try() else {
+      return false
     }
+    let slotIndex = self.nextSlot
+    self.nextSlot = (self.nextSlot + 1) % Self.slotCount
+    let source = UnsafeMutableAudioBufferListPointer(
+      UnsafeMutablePointer(mutating: audioBufferList))
+    let target = UnsafeMutableAudioBufferListPointer(self.slots[slotIndex].mutableAudioBufferList)
+    guard source.count == target.count else {
+      self.pendingLock.unlock()
+      self.available.signal()
+      return false
+    }
+    let bytesPerFrame = max(Int(self.sourceFormat.streamDescription.pointee.mBytesPerFrame), 1)
+    var frameLength = Int.max
+    for index in 0..<source.count {
+      let byteCount = Int(source[index].mDataByteSize)
+      guard byteCount <= Int(target[index].mDataByteSize),
+        let sourceData = source[index].mData,
+        let targetData = target[index].mData
+      else {
+        self.pendingLock.unlock()
+        self.available.signal()
+        return false
+      }
+      memcpy(targetData, sourceData, byteCount)
+      target[index].mDataByteSize = UInt32(byteCount)
+      frameLength = min(frameLength, byteCount / bytesPerFrame)
+    }
+    guard frameLength >= 0, frameLength <= Int(Self.slotFrames) else {
+      self.pendingLock.unlock()
+      self.available.signal()
+      return false
+    }
+    self.slots[slotIndex].frameLength = AVAudioFrameCount(frameLength)
+    guard self.pending.append(slotIndex) else {
+      self.pendingLock.unlock()
+      self.available.signal()
+      return false
+    }
+    self.pendingLock.unlock()
+    self.workerSignal.add(data: 1)
+    return true
+  }
+
+  private func drainPending() {
+    while true {
+      self.pendingLock.lock()
+      guard let slotIndex = self.pending.removeFirst() else {
+        self.pendingLock.unlock()
+        return
+      }
+      self.pendingLock.unlock()
+      do {
+        try self.convertAndWrite(self.slots[slotIndex])
+      } catch {
+        self.onFailure(error)
+      }
+      self.available.signal()
+    }
+  }
+
+  private func convertAndWrite(_ sourceBuffer: AVAudioPCMBuffer) throws {
     let ratio = self.targetFormat.sampleRate / self.sourceFormat.sampleRate
     let capacity = AVAudioFrameCount(ceil(Double(sourceBuffer.frameLength) * ratio)) + 1
     guard
@@ -496,8 +581,21 @@ private final class PCMWriter: @unchecked Sendable {
 
 private final class CaptureLifecycle: @unchecked Sendable {
   private let lock = NSLock()
+  private let failureQueue = DispatchQueue(label: "ai.openclaw.facetime-capture-failure")
   private var failure: Error?
   private var stopping = false
+  private lazy var captureOverflowSignal: DispatchSourceUserDataAdd = {
+    let source = DispatchSource.makeUserDataAddSource(queue: self.failureQueue)
+    source.setEventHandler { [weak self] in
+      _ = self?.fail(captureQueueOverflowError)
+    }
+    source.resume()
+    return source
+  }()
+
+  init() {
+    _ = self.captureOverflowSignal
+  }
 
   func fail(_ error: Error) -> Bool {
     self.lock.lock()
@@ -505,6 +603,10 @@ private final class CaptureLifecycle: @unchecked Sendable {
     guard self.failure == nil else { return false }
     self.failure = error
     return true
+  }
+
+  func signalCaptureOverflow() {
+    self.captureOverflowSignal.add(data: 1)
   }
 
   func requestStop() {
@@ -517,6 +619,245 @@ private final class CaptureLifecycle: @unchecked Sendable {
     self.lock.lock()
     defer { self.lock.unlock() }
     return (self.failure, self.stopping)
+  }
+}
+
+private func audioDevice(named expectedName: String) throws -> AudioDeviceID {
+  let devices = try AudioObjectID.system.readObjectIDs(
+    kAudioHardwarePropertyDevices,
+    scope: kAudioObjectPropertyScopeGlobal)
+  guard let device = try devices.first(where: {
+    try $0.readString(kAudioObjectPropertyName) == expectedName
+  }) else {
+    throw CaptureError.outputRouteMismatch("native playback", [expectedName])
+  }
+  return device
+}
+
+private final class CarrierOwnerRef: @unchecked Sendable {
+  private let lock = NSLock()
+  private var owner: AudioProcess
+
+  init(_ owner: AudioProcess) {
+    self.owner = owner
+  }
+
+  func update(_ owner: AudioProcess) {
+    self.lock.lock()
+    self.owner = owner
+    self.lock.unlock()
+  }
+
+  func terminateIfCurrent(requestedNames: Set<String>) {
+    self.lock.lock()
+    let expected = self.owner
+    self.lock.unlock()
+    guard
+      let current = try? resolveActiveOwner(requestedNames: requestedNames),
+      current.pid == expected.pid,
+      current.objectID == expected.objectID,
+      current.trustedIdentity == expected.trustedIdentity
+    else {
+      return
+    }
+    _ = Darwin.kill(current.pid, SIGTERM)
+    for _ in 0..<10 {
+      if Darwin.kill(current.pid, 0) != 0 {
+        return
+      }
+      usleep(50_000)
+    }
+    _ = Darwin.kill(current.pid, SIGKILL)
+  }
+}
+
+private final class NativePlayback: @unchecked Sendable {
+  private struct DrainMarker {
+    let generation: UInt32
+    let targetFrames: UInt64
+  }
+
+  private let engine = AVAudioEngine()
+  private let player = AVAudioPlayerNode()
+  private let queue = DispatchQueue(label: "ai.openclaw.facetime-playback-owner")
+  private let format = AVAudioFormat(
+    commonFormat: .pcmFormatInt16,
+    sampleRate: outputSampleRate,
+    channels: 1,
+    interleaved: true)!
+  private var generation: UInt32 = 1
+  private var scheduledFrames: UInt64 = 0
+  private var playedFrames: UInt64 = 0
+  private var markers: [DrainMarker] = []
+
+  init() throws {
+    self.engine.attach(self.player)
+    self.engine.connect(self.player, to: self.engine.mainMixerNode, format: self.format)
+    var deviceID = try audioDevice(named: "OpenClaw-Feed")
+    guard let outputUnit = self.engine.outputNode.audioUnit else {
+      throw CaptureError.invalidAudioFormat
+    }
+    let status = AudioUnitSetProperty(
+      outputUnit,
+      kAudioOutputUnitProperty_CurrentDevice,
+      kAudioUnitScope_Global,
+      0,
+      &deviceID,
+      UInt32(MemoryLayout<AudioDeviceID>.size))
+    guard status == noErr else {
+      throw CaptureError.coreAudio("Select OpenClaw-Feed output", status)
+    }
+    try self.engine.start()
+    self.player.play()
+  }
+
+  private func emit(_ event: String, generation: UInt32, frames: UInt64, message: String? = nil) {
+    var payload: [String: Any] = [
+      "event": event,
+      "generation": generation,
+      "frames": frames,
+    ]
+    if let message {
+      payload["message"] = message
+    }
+    guard let data = try? JSONSerialization.data(withJSONObject: payload),
+      let line = String(data: data, encoding: .utf8)
+    else {
+      return
+    }
+    FileHandle.standardError.write(Data("facetime-control:\(line)\n".utf8))
+  }
+
+  func enqueue(_ data: Data) {
+    self.queue.async { [self, data] in
+      guard data.count > 0, data.count % MemoryLayout<Int16>.size == 0 else {
+        self.emit("overflow", generation: self.generation, frames: self.playedFrames,
+                  message: "invalid native playback frame")
+        return
+      }
+      let frames = AVAudioFrameCount(data.count / MemoryLayout<Int16>.size)
+      let outstanding = self.scheduledFrames - self.playedFrames
+      if outstanding + UInt64(frames) > 1_048_576 {
+        self.emit("overflow", generation: self.generation, frames: self.playedFrames,
+                  message: "native playback ring overflow")
+        return
+      }
+      guard let buffer = AVAudioPCMBuffer(pcmFormat: self.format, frameCapacity: frames),
+        let samples = buffer.int16ChannelData?[0]
+      else {
+        self.emit("overflow", generation: self.generation, frames: self.playedFrames,
+                  message: "native playback allocation failed")
+        return
+      }
+      _ = data.copyBytes(to: UnsafeMutableBufferPointer(start: samples, count: Int(frames)))
+      buffer.frameLength = frames
+      let ownedGeneration = self.generation
+      self.scheduledFrames += UInt64(frames)
+      self.player.scheduleBuffer(buffer, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+        self?.complete(frames: UInt64(frames), generation: ownedGeneration)
+      }
+    }
+  }
+
+  private func complete(frames: UInt64, generation: UInt32) {
+    self.queue.async {
+      guard generation == self.generation else { return }
+      self.playedFrames += frames
+      self.emit("played", generation: generation, frames: self.playedFrames)
+      let drained = self.markers.filter { $0.generation == generation && $0.targetFrames <= self.playedFrames }
+      self.markers.removeAll { $0.generation == generation && $0.targetFrames <= self.playedFrames }
+      for marker in drained {
+        self.emit("drained", generation: marker.generation, frames: self.playedFrames)
+      }
+    }
+  }
+
+  func markDrain(generation: UInt32) {
+    self.queue.async {
+      guard generation == self.generation else { return }
+      let marker = DrainMarker(generation: generation, targetFrames: self.scheduledFrames)
+      if marker.targetFrames <= self.playedFrames {
+        self.emit("drained", generation: generation, frames: self.playedFrames)
+      } else {
+        self.markers.append(marker)
+      }
+    }
+  }
+
+  func clear(generation: UInt32) {
+    self.queue.sync {
+      guard generation > self.generation else { return }
+      self.generation = generation
+      self.player.stop()
+      self.scheduledFrames = 0
+      self.playedFrames = 0
+      self.markers.removeAll()
+      self.player.play()
+    }
+  }
+
+  func stop() {
+    self.queue.sync {
+      self.generation &+= 1
+      self.player.stop()
+      self.engine.stop()
+      self.markers.removeAll()
+    }
+  }
+}
+
+private final class ParentCommandReader: @unchecked Sendable {
+  private let playback: NativePlayback
+  private let unexpectedEOF: () -> Void
+  private var closeSafe = false
+
+  init(playback: NativePlayback, unexpectedEOF: @escaping () -> Void) {
+    self.playback = playback
+    self.unexpectedEOF = unexpectedEOF
+  }
+
+  func start() {
+    DispatchQueue.global(qos: .userInitiated).async {
+      var buffered = Data()
+      while true {
+        let chunk = FileHandle.standardInput.availableData
+        if chunk.isEmpty {
+          if !self.closeSafe {
+            self.unexpectedEOF()
+          }
+          return
+        }
+        buffered.append(chunk)
+        while buffered.count >= 5 {
+          let type = buffered[buffered.startIndex]
+          let length = buffered.dropFirst().prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+          guard length <= 256 * 1024 else {
+            self.unexpectedEOF()
+            return
+          }
+          let frameLength = 5 + Int(length)
+          guard buffered.count >= frameLength else { break }
+          let payload = buffered.subdata(in: 5..<frameLength)
+          buffered.removeSubrange(0..<frameLength)
+          if type == 1 {
+            self.playback.enqueue(payload)
+          } else if payload.count == 4 {
+            let generation = payload.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            if type == 2 {
+              self.playback.markDrain(generation: generation)
+            } else if type == 3 {
+              self.playback.clear(generation: generation)
+            } else if type == 4 {
+              self.closeSafe = true
+            }
+          }
+        }
+        if buffered.count > 256 * 1024 + 5 {
+          self.unexpectedEOF()
+          return
+        }
+      }
+    }
   }
 }
 
@@ -547,7 +888,11 @@ private final class ProcessTap: @unchecked Sendable {
     let streamDescription: AudioStreamBasicDescription = try createdTapID.read(
       kAudioTapPropertyFormat,
       defaultValue: AudioStreamBasicDescription())
-    self.writer = try PCMWriter(streamDescription: streamDescription)
+    self.writer = try PCMWriter(streamDescription: streamDescription) { [lifecycle] error in
+      if lifecycle.fail(error) {
+        fputs("facetime-audio-capture: fatal: \(error.localizedDescription)\n", stderr)
+      }
+    }
 
     // Keep hardware subdevices out of this aggregate. A duplex headset would
     // add unrelated input buffers to the callback, which is tap-format-only.
@@ -582,12 +927,8 @@ private final class ProcessTap: @unchecked Sendable {
       self.aggregateDeviceID,
       queue
     ) { [writer = self.writer, lifecycle = self.lifecycle] _, inputData, _, _, _ in
-      do {
-        try writer.write(inputData)
-      } catch {
-        if lifecycle.fail(error) {
-          fputs("facetime-audio-capture: fatal: \(error.localizedDescription)\n", stderr)
-        }
+      if !writer.enqueue(inputData) {
+        lifecycle.signalCaptureOverflow()
       }
     }
     guard status == noErr, let createdIOProcID else {
@@ -626,7 +967,8 @@ private func waitForTerminationSignal(
   _ lifecycle: CaptureLifecycle,
   process: AudioProcess,
   requestedNames: Set<String>,
-  taps initialTaps: [ProcessTap]
+  taps initialTaps: [ProcessTap],
+  ownerRef: CarrierOwnerRef
 ) async throws {
   signal(SIGINT, SIG_IGN)
   signal(SIGTERM, SIG_IGN)
@@ -642,6 +984,7 @@ private func waitForTerminationSignal(
   }
   var currentProcess = process
   var taps = initialTaps
+  var reportedFailure = false
   defer {
     for tap in taps {
       tap.stop()
@@ -652,6 +995,10 @@ private func waitForTerminationSignal(
     let state = lifecycle.state()
     if state.stopping {
       return
+    }
+    if let failure = state.failure, !reportedFailure {
+      reportedFailure = true
+      fputs("facetime-audio-capture: fatal-safety-retained: \(failure.localizedDescription)\n", stderr)
     }
     if state.failure == nil && ContinuousClock.now >= nextRouteCheck {
       do {
@@ -687,6 +1034,7 @@ private func waitForTerminationSignal(
           }
           taps = [replacement]
           currentProcess = activeProcess
+          ownerRef.update(activeProcess)
           fputs(
             "facetime-audio-capture: rebound process tap to \(activeProcess.name) pid=\(activeProcess.pid)\n",
             stderr)
@@ -805,6 +1153,14 @@ private struct FaceTimeAudioCapture {
         return
       }
       var currentProcess = selected[0]
+      let ownerRef = CarrierOwnerRef(currentProcess)
+      let playback = try NativePlayback()
+      defer { playback.stop() }
+      let parentCommands = ParentCommandReader(playback: playback) {
+        ownerRef.terminateIfCurrent(requestedNames: requestedNames)
+        lifecycle.requestStop()
+      }
+      parentCommands.start()
       while true {
         do {
           try await waitForOpenClawRoutes(
@@ -824,6 +1180,7 @@ private struct FaceTimeAudioCapture {
               requestedNames: requestedNames,
               processNames: arguments.processNames,
               timeout: .seconds(3))
+            ownerRef.update(currentProcess)
             let replacement = try ProcessTap(
               processObjectIDs: [currentProcess.objectID], lifecycle: lifecycle)
             try replacement.start()
@@ -838,7 +1195,8 @@ private struct FaceTimeAudioCapture {
               lifecycle,
               process: currentProcess,
               requestedNames: requestedNames,
-              taps: taps)
+              taps: taps,
+              ownerRef: ownerRef)
             return
           }
         } catch {
@@ -851,7 +1209,8 @@ private struct FaceTimeAudioCapture {
             lifecycle,
             process: currentProcess,
             requestedNames: requestedNames,
-            taps: taps)
+            taps: taps,
+            ownerRef: ownerRef)
           return
         }
       }
@@ -865,7 +1224,8 @@ private struct FaceTimeAudioCapture {
         lifecycle,
         process: currentProcess,
         requestedNames: requestedNames,
-        taps: taps)
+        taps: taps,
+        ownerRef: ownerRef)
     } catch {
       fputs("facetime-audio-capture: \(error.localizedDescription)\n", stderr)
       exit(1)

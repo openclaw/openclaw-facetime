@@ -13,6 +13,7 @@
 #import "Logging.h"
 
 static const NSUInteger OpenClawMaximumFrameBytes = 64 * 1024;
+static const NSUInteger OpenClawMaximumQueuedWriteBytes = 256 * 1024;
 
 @interface NetworkController ()
 @property (strong) NSInputStream *inputStream;
@@ -70,14 +71,18 @@ static id sharedInstance = nil;
     // we'll base this off the users uid (a unique id for each user, starting from 501)
     // we'll subtract 501 to get an id starting at 0, incremented for each user
     // then we add this to the base port to get a unique port for the socket
-    int port = CLAMP(45670 + getuid()-501, 45670, 65535);
+    int port = CLAMP(
+        OPENCLAW_FACETIME_HELPER_BASE_PORT + getuid()-501,
+        OPENCLAW_FACETIME_HELPER_BASE_PORT,
+        OPENCLAW_FACETIME_HELPER_MAX_PORT
+    );
     DLog("FACETIMEHELPER: Connecting to socket on port %{public}d", port);
 
     CFReadStreamRef readStream = NULL;
     CFWriteStreamRef writeStream = NULL;
     CFStreamCreatePairWithSocketToHost(
         kCFAllocatorDefault,
-        (__bridge CFStringRef)@"127.0.0.1",
+        (__bridge CFStringRef)OPENCLAW_FACETIME_HELPER_HOST,
         (UInt32)port,
         &readStream,
         &writeStream
@@ -120,9 +125,20 @@ static id sharedInstance = nil;
 }
 
 - (void)sendMessage:(NSDictionary*)data {
+    if (self.outgoingTransformBlock == nil) {
+        return;
+    }
+    NSDictionary *protectedMessage = self.outgoingTransformBlock(data);
+    if (protectedMessage == nil) {
+        return;
+    }
+    [self sendControlMessage:protectedMessage];
+}
+
+- (void)sendControlMessage:(NSDictionary*)data {
     if (![NSThread isMainThread]) {
         dispatch_async(dispatch_get_main_queue(), ^{
-            [self sendMessage:data];
+            [self sendControlMessage:data];
         });
         return;
     }
@@ -132,23 +148,39 @@ static id sharedInstance = nil;
         DLog("FACETIMEHELPER: Failed to encode message: %{public}@", error);
         return;
     }
+    if (jsonData.length > OpenClawMaximumFrameBytes) {
+        [self handleStreamFailure:nil];
+        return;
+    }
     NSString *message = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
     // add a newline to the message so back-to-back messages are split and sent correctly
     NSString *jsonMessage = [NSString stringWithFormat:(@"%@\r\n"), message];
     NSData* finalData = [jsonMessage dataUsingEncoding:NSUTF8StringEncoding];
-    DLog("FACETIMEHELPER: Sending data: %{public}@", data);
+    if (self.writeBuffer.length - self.writeOffset + finalData.length > OpenClawMaximumQueuedWriteBytes) {
+        [self handleStreamFailure:nil];
+        return;
+    }
     [self.writeBuffer appendData:finalData];
     [self flushWrites];
 }
 
 - (void)sendConnectedMessage {
-    DLog("FACETIMEHELPER: Connected to gateway socket");
-    NSDictionary *message = @{
-        @"event": @"ping",
-        @"message": @"Helper Connected!",
-        @"bundle_identifier": [[NSBundle mainBundle] bundleIdentifier] ?: @"",
-    };
-    [self sendMessage:message];
+    DLog("FACETIMEHELPER: Gateway socket transport opened");
+    NSUInteger generation = self.connectionGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        if (generation == self.connectionGeneration &&
+            self.inputStream != nil && self.outputStream != nil &&
+            self.outgoingTransformBlock == nil) {
+            [self failConnection];
+        }
+    });
+    if (self.connectionReadyBlock != nil) {
+        self.connectionReadyBlock(self);
+    }
+}
+
+- (void)failConnection {
+    [self handleStreamFailure:nil];
 }
 
 - (void)flushWrites {
@@ -207,6 +239,10 @@ static id sharedInstance = nil;
         if (newlineIndex == NSNotFound) {
             break;
         }
+        if (newlineIndex > OpenClawMaximumFrameBytes) {
+            [self handleStreamFailure:nil];
+            return;
+        }
         NSUInteger lineLength = newlineIndex;
         if (lineLength > 0 && buffer[lineLength - 1] == '\r') {
             lineLength -= 1;
@@ -220,7 +256,6 @@ static id sharedInstance = nil;
         }
         NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
         if (line && self.messageReceivedBlock) {
-            DLog("FACETIMEHELPER: Received event: %{public}@", line);
             self.messageReceivedBlock(self, line);
         }
     }
@@ -281,6 +316,7 @@ static id sharedInstance = nil;
     self.readBuffer = nil;
     self.writeBuffer = nil;
     self.writeOffset = 0;
+    self.outgoingTransformBlock = nil;
 }
 
 - (void)handleStreamFailure:(NSError *)error {

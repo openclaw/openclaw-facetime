@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-describe("FaceTime helper action authentication", () => {
+describe("FaceTime helper connection authentication", () => {
   it(
     "rejects same-session replay and envelopes captured before reconnect",
     { timeout: 20_000 },
     () => {
       const outputDir = mkdtempSync(path.join(tmpdir(), "facetime-helper-auth."));
-      const binary = path.join(outputDir, "action-auth-tests");
+      const binary = path.join(outputDir, "connection-auth-tests");
       try {
         // Cold macOS CI compiles this native harness inside the test, so allow
         // toolchain startup without weakening any authentication assertion.
@@ -18,8 +18,10 @@ describe("FaceTime helper action authentication", () => {
           "-fobjc-arc",
           "-framework",
           "Foundation",
-          "helper/FaceTimeHelper/ActionAuthentication.m",
-          "helper/tests/ActionAuthenticationTests.m",
+          "-framework",
+          "Security",
+          "helper/FaceTimeHelper/ConnectionAuthentication.m",
+          "helper/tests/ConnectionAuthenticationTests.m",
           "-o",
           binary,
         ]);

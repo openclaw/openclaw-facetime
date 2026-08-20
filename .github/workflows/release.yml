@@ -1,80 +1,246 @@
-name: native release verification
+name: Release
 
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Published tag to verify, for example v0.1.0"
+      version:
+        description: "SemVer to release, with or without a leading v"
         required: true
         type: string
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
-  group: native-release-verification-${{ inputs.tag }}
+  group: facetime-release-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
-  source-build:
-    runs-on: macos-15
-    timeout-minutes: 30
+  validate:
+    name: 1 · Validate frozen source
+    runs-on: ubuntu-latest
+    permissions:
+      checks: read
+      contents: read
+    outputs:
+      tag: ${{ steps.input.outputs.tag }}
+      target-sha: ${{ steps.source.outputs.target-sha }}
+      tag-object-sha: ${{ steps.source.outputs.tag-object-sha }}
     steps:
+      - name: Validate input
+        id: input
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version=${VERSION#v}
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+          echo "tag=v$version" >>"$GITHUB_OUTPUT"
+      - name: Resolve protected release target
+        id: source
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          TAG: ${{ steps.input.outputs.tag }}
+        with:
+          script: |
+            const repository = await github.rest.repos.get(context.repo);
+            const branchName = repository.data.default_branch;
+            const branch = await github.rest.repos.getBranch({ ...context.repo, branch: branchName });
+            if (context.ref !== `refs/heads/${branchName}` || context.sha !== branch.data.commit.sha) {
+              throw new Error(`release must run from current ${branchName}`);
+            }
+            let targetSha = context.sha;
+            let tagObjectSha = '';
+            try {
+              const ref = await github.rest.git.getRef({ ...context.repo, ref: `tags/${process.env.TAG}` });
+              if (ref.data.object.type !== 'tag') throw new Error('existing release tag must be annotated');
+              tagObjectSha = ref.data.object.sha;
+              const tag = await github.rest.git.getTag({ ...context.repo, tag_sha: tagObjectSha });
+              if (tag.data.object.type !== 'commit') throw new Error('release tag must peel to a commit');
+              targetSha = tag.data.object.sha;
+              const comparison = await github.rest.repos.compareCommitsWithBasehead({
+                ...context.repo, basehead: `${targetSha}...${context.sha}`,
+              });
+              if (!['ahead', 'identical'].includes(comparison.data.status)) {
+                throw new Error('existing release tag is not reachable from the default branch');
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            core.setOutput('target-sha', targetSha);
+            core.setOutput('tag-object-sha', tagObjectSha);
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: refs/tags/${{ inputs.tag }}
-          fetch-depth: 0
           persist-credentials: false
-      - name: Verify tag matches native version
+          ref: ${{ steps.source.outputs.target-sha }}
+      - name: Verify version and independent CI
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
-        run: |
-          version="$(scripts/native-version.sh)"
-          test "${RELEASE_TAG}" = "v${version}"
-      - name: Build ad-hoc-signed archive from source
-        run: make native-archive
-      - name: Verify source-built archive
-        run: make native-verify
-      - name: Upload non-release comparison artifact
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+          TAG: ${{ steps.input.outputs.tag }}
+          TARGET_SHA: ${{ steps.source.outputs.target-sha }}
         with:
-          name: openclaw-facetime-source-build-${{ inputs.tag }}
-          path: |
-            bin/openclaw-facetime-macos-arm64.zip
-            bin/openclaw-facetime-macos-arm64.zip.sha256
-          if-no-files-found: error
+          script: |
+            const fs = require('fs');
+            const version = fs.readFileSync('version.env', 'utf8').match(/^VERSION=(.+)$/m)?.[1];
+            if (`v${version}` !== process.env.TAG) throw new Error('version.env does not match release input');
+            const accepted = new Set(['success', 'neutral', 'skipped']);
+            const checks = await github.paginate(github.rest.checks.listForRef, {
+              ...context.repo, ref: process.env.TARGET_SHA, per_page: 100, filter: 'latest',
+            });
+            const independent = checks.filter((check) => !check.details_url?.includes(`/actions/runs/${context.runId}`));
+            if (independent.length === 0) throw new Error('release target has no independent CI evidence');
+            const failures = independent.filter((check) => check.status !== 'completed' || !accepted.has(check.conclusion));
+            if (failures.length) throw new Error(`non-green checks: ${failures.map((check) => check.name).join(', ')}`);
 
-  published-asset:
+  tag:
+    name: 2 · Freeze annotated tag
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create or verify tag
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          EXPECTED_TAG_OBJECT: ${{ needs.validate.outputs.tag-object-sha }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          TARGET_SHA: ${{ needs.validate.outputs.target-sha }}
+        with:
+          script: |
+            if (process.env.EXPECTED_TAG_OBJECT) {
+              const ref = await github.rest.git.getRef({ ...context.repo, ref: `tags/${process.env.TAG}` });
+              if (ref.data.object.type !== 'tag' || ref.data.object.sha !== process.env.EXPECTED_TAG_OBJECT) {
+                throw new Error('release tag changed after validation');
+              }
+              return;
+            }
+            const tag = await github.rest.git.createTag({
+              ...context.repo,
+              tag: process.env.TAG,
+              message: `Release ${process.env.TAG}`,
+              object: process.env.TARGET_SHA,
+              type: 'commit',
+              tagger: {
+                name: 'github-actions[bot]',
+                email: '41898282+github-actions[bot]@users.noreply.github.com',
+                date: new Date().toISOString(),
+              },
+            });
+            await github.rest.git.createRef({ ...context.repo, ref: `refs/tags/${process.env.TAG}`, sha: tag.data.sha });
+
+  sign:
+    name: 3 · Build, sign, and notarize
+    needs: [validate, tag]
     runs-on: macos-15
-    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      artifact-name: ${{ steps.output.outputs.artifact-name }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: refs/tags/${{ inputs.tag }}
-          fetch-depth: 0
           persist-credentials: false
-      - name: Verify tag matches native version
+          ref: ${{ needs.validate.outputs.tag }}
+      - name: Validate credentials
         env:
-          RELEASE_TAG: ${{ inputs.tag }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
         run: |
-          version="$(scripts/native-version.sh)"
-          test "${RELEASE_TAG}" = "v${version}"
-      - name: Download published native archive
+          set -euo pipefail
+          for name in MACOS_SIGNING_P12 MACOS_SIGNING_P12_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_P8; do
+            [[ -n "${!name:-}" ]] || { echo "missing release secret: $name" >&2; exit 1; }
+          done
+      - name: Import OpenClaw Foundation signer
+        id: signer
+        env:
+          P12_BASE64: ${{ secrets.MACOS_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          team=FWJYW4S8P8
+          authority="Developer ID Application: OpenClaw Foundation ($team)"
+          keychain="$RUNNER_TEMP/facetime-release.keychain-db"
+          password=$(openssl rand -hex 32)
+          p12="$RUNNER_TEMP/facetime-release.p12"
+          printf '%s' "$P12_BASE64" | base64 --decode >"$p12"
+          security create-keychain -p "$password" "$keychain"
+          security unlock-keychain -p "$password" "$keychain"
+          security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          identity=$(security find-identity -v -p codesigning "$keychain" | awk -v authority="$authority" 'index($0, "\"" authority "\"") && $2 ~ /^[0-9A-Fa-f]{40}$/ { print $2; exit }')
+          [[ "$identity" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "required signing identity missing: $authority" >&2; exit 1; }
+          echo "identity=$identity" >>"$GITHUB_OUTPUT"
+          echo "keychain=$keychain" >>"$GITHUB_OUTPUT"
+          /usr/bin/trash "$p12"
+      - name: Create signed release payload
+        env:
+          APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          CODESIGN_IDENTITY: ${{ steps.signer.outputs.identity }}
+          EXPECTED_TEAM_ID: FWJYW4S8P8
+          OUTPUT_DIR: ${{ github.workspace }}/bin
+        run: |
+          scripts/sign-and-notarize.sh
+          REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
+            EXPECTED_TEAM_ID=FWJYW4S8P8 make native-verify
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: native-release-${{ github.run_id }}-${{ github.run_attempt }}
+          path: bin/openclaw-facetime-macos-arm64.zip*
+          if-no-files-found: error
+          retention-days: 30
+      - id: output
+        run: echo "artifact-name=native-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
+      - name: Delete signing keychain
+        if: always()
+        env:
+          KEYCHAIN: ${{ steps.signer.outputs.keychain }}
+        run: '[[ -z "${KEYCHAIN:-}" || ! -e "$KEYCHAIN" ]] || security delete-keychain "$KEYCHAIN"'
+
+  release:
+    name: 4 · Draft, verify, publish, and hand off
+    needs: [validate, sign]
+    runs-on: macos-15
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.tag }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sign.outputs.artifact-name }}
+          path: release-assets
+      - name: Create draft
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ inputs.tag }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes release-assets/*
+      - name: Download and independently verify draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
         run: |
           mkdir -p bin
-          gh release download "${RELEASE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern openclaw-facetime-macos-arm64.zip \
-            --pattern openclaw-facetime-macos-arm64.zip.sha256 \
-            --pattern openclaw-facetime-macos-arm64.zip.notarization.json \
-            --dir bin
-      - name: Verify Developer ID signatures and archive contract
+          gh release download "$TAG" --dir bin --pattern 'openclaw-facetime-macos-arm64.zip*'
+          REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
+            EXPECTED_TEAM_ID=FWJYW4S8P8 make native-verify
+      - name: Publish verified draft
         env:
-          REQUIRE_DEVELOPER_ID: "1"
-          REQUIRE_NOTARIZATION_RECEIPT: "1"
-          REQUIRE_NOTARIZED_GATEKEEPER: "1"
-          EXPECTED_TEAM_ID: ${{ vars.MAC_RELEASE_TEAM_ID }}
-        run: make native-verify
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false
+      - name: Update OpenClaw Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_FORMULA: openclaw-facetime
+          HOMEBREW_TAP_REPOSITORY: openclaw/homebrew-tap
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          [[ -n "$GH_TOKEN" ]] || { echo "missing release secret: HOMEBREW_TAP_TOKEN" >&2; exit 1; }
+          scripts/update-homebrew.sh "$TAG"
