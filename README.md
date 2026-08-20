@@ -31,7 +31,7 @@ OpenClaw beta has been promoted for production use.
 
 | Requirement | Supported or tested state |
 | --- | --- |
-| Hardware | Apple Silicon only |
+| Hardware | Apple Silicon only; native release archive is arm64 with an arm64e + arm64 injected helper |
 | macOS API floor | macOS 14.4 or later |
 | Live-tested host | macOS 26.4 |
 | OpenClaw | Host plugin API `>=2026.7.2-beta.4` |
@@ -248,9 +248,38 @@ pnpm inject:helper:terminal
 ```
 
 Each helper connects to `127.0.0.1` on `45670 + uid - 501`. The connection is
-authenticated with a locally generated key. FaceTime owns
-incoming video calls, while Phone owns incoming FaceTime Audio calls on the
-live-tested macOS 26.4 route.
+authenticated with a locally generated key. Release helpers do not embed that
+key: injection places it in a private one-use sidecar beside the copied dylib,
+and the helper refuses to connect unless that file is owned by the current
+user, mode 0600, a regular non-symlink file, and a valid 256-bit token.
+FaceTime owns incoming video calls, while Phone owns incoming FaceTime Audio
+calls on the live-tested macOS 26.4 route.
+
+## Native release process
+
+The native capture executable and injected helper now use the same release
+shape as `imsg`: a versioned archive built from repository source, Developer ID
+signatures, Apple notarization, independent archive verification, and a
+Homebrew formula handoff. The current artifact is Apple Silicon only because
+the supported helper requires arm64e.
+
+Once the first release is published in the tap, install the native components
+on the OpenClaw Mac with:
+
+```sh
+brew install steipete/tap/openclaw-facetime
+```
+
+The plugin checks `OPENCLAW_FACETIME_NATIVE_DIR` first, then the Apple Silicon
+and Intel Homebrew prefixes. It uses the installed capture executable and
+stages the installed signed helper with a fresh per-machine authentication
+sidecar. Source checkouts still build locally when no packaged installation is
+available.
+
+Release engineering instructions are in `docs/RELEASING.md`. This pipeline does
+not bundle the GPL-derived audio driver, and it does not make the release
+available until a maintainer publishes a signed archive and configures the
+Homebrew tap.
 
 ## Identity and access control
 

@@ -36,9 +36,15 @@ bash -n scripts/*.sh
 bash scripts/test-native.sh
 pnpm build:capture
 pnpm build:helper:macabi
+make native-archive
+make native-verify
 pnpm build
 npm pack --dry-run
 ```
+
+Release archives are signed and notarized separately. Follow
+`docs/RELEASING.md`; CI comparison artifacts are ad-hoc signed and must never
+be published as release assets.
 
 Changes to the carrier, helper, audio route, or Realtime session also require
 the live acceptance procedure in `docs/phase1-verification.md`. A real remote

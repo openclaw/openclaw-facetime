@@ -5,6 +5,11 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 
+const HOMEBREW_NATIVE_DIRS = [
+  "/opt/homebrew/opt/openclaw-facetime/libexec",
+  "/usr/local/opt/openclaw-facetime/libexec",
+] as const;
+
 export function resolvePluginRoot(entryUrl: string): string {
   const entryDirectory = dirname(fileURLToPath(entryUrl));
   return entryDirectory.endsWith("/dist") ? resolve(entryDirectory, "..") : entryDirectory;
@@ -12,6 +17,18 @@ export function resolvePluginRoot(entryUrl: string): string {
 
 export function resolveCaptureBinary(pluginRoot: string): string {
   return resolve(pluginRoot, "native", ".build", "release", "facetime-audio-capture");
+}
+
+export function resolveInstalledCaptureCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const configured = env.OPENCLAW_FACETIME_NATIVE_DIR?.trim();
+  return [
+    ...(configured ? [resolve(configured, "facetime-audio-capture")] : []),
+    ...HOMEBREW_NATIVE_DIRS.map((directory) =>
+      resolve(directory, "facetime-audio-capture"),
+    ),
+  ];
 }
 
 export function resolveHelperDylib(): string {
@@ -52,15 +69,24 @@ export async function ensureCaptureBinary(params: {
   pluginRoot: string;
   runCommandWithTimeout: PluginRuntime["system"]["runCommandWithTimeout"];
   access?: typeof access;
+  env?: NodeJS.ProcessEnv;
 }): Promise<string> {
-  const binary = resolveCaptureBinary(params.pluginRoot);
   const checkAccess = params.access ?? access;
+  for (const candidate of resolveInstalledCaptureCandidates(params.env)) {
+    try {
+      await checkAccess(candidate, constants.X_OK);
+      return candidate;
+    } catch {
+      // Continue through the ordered native-install candidates.
+    }
+  }
+
+  const binary = resolveCaptureBinary(params.pluginRoot);
   try {
     await checkAccess(binary, constants.X_OK);
     return binary;
   } catch {
-    // OpenClaw installs npm plugins with lifecycle scripts disabled. Build the
-    // signed helper from the packaged Swift source on first activation instead.
+    // Source installs retain a local build fallback for development.
   }
   const buildScript = resolve(params.pluginRoot, "scripts", "build-capture.sh");
   const result = await params.runCommandWithTimeout(["/bin/bash", buildScript], {

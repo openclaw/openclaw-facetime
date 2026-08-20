@@ -35,15 +35,15 @@
 @property(nonatomic, readonly, copy) NSArray *validityErrors;
 @end
 
-#ifndef OPENCLAW_FACETIME_HELPER_TOKEN
-#error "Build the helper with scripts/build-helper-macabi.sh to configure IPC authentication."
-#endif
 #ifndef OPENCLAW_FACETIME_HELPER_BUILD_ID
 #error "Build the helper with scripts/build-helper-macabi.sh to configure its build identity."
 #endif
 
+static NSString *HelperIPCProofMaterial;
+__attribute__((visibility("default"))) int OpenClawFaceTimeHelperInitialized = 0;
+
 static NSString *HelperHMAC(NSString *message) {
-    NSData *key = [[NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_TOKEN] dataUsingEncoding:NSUTF8StringEncoding];
+    NSData *key = [HelperIPCProofMaterial dataUsingEncoding:NSUTF8StringEncoding];
     NSData *payload = [message dataUsingEncoding:NSUTF8StringEncoding];
     unsigned char digest[CC_SHA256_DIGEST_LENGTH];
     CCHmac(kCCHmacAlgSHA256, key.bytes, key.length, payload.bytes, payload.length, digest);
@@ -295,8 +295,22 @@ FACETIMEHELPER *plugin;
         [bundleIdentifier isEqualToString:@"com.apple.FaceTime.FTConversationService"] ||
         [bundleIdentifier isEqualToString:@"com.apple.mobilephone"] ||
         [bundleIdentifier isEqualToString:@"com.apple.TelephonyUtilities"]) {
+        NSError *authenticationError = nil;
+        HelperIPCProofMaterial = OpenClawFaceTimeLoadHelperTokenForImageAddress(
+            (const void *)&HelperHMAC,
+            &authenticationError
+        );
+        if (HelperIPCProofMaterial == nil) {
+            os_log_error(
+                OS_LOG_DEFAULT,
+                "FACETIMEHELPER: Refusing to start without secure IPC authentication: %{public}@",
+                authenticationError.localizedDescription
+            );
+            return;
+        }
         DLog("FACETIMEHELPER: Initializing Connection...");
         [plugin initializeNetworkController];
+        OpenClawFaceTimeHelperInitialized = 1;
     } else {
         DLog("FACETIMEHELPER: Injected into unsupported call process %@, aborting.", bundleIdentifier);
         return;
@@ -559,7 +573,7 @@ FACETIMEHELPER *plugin;
         if (nonce.length > 0) {
             if (ActionAuthenticator == nil) {
                 ActionAuthenticator = [[OpenClawFaceTimeActionAuthenticator alloc]
-                    initWithToken:[NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_TOKEN]];
+                    initWithProofMaterial:HelperIPCProofMaterial];
             }
             [ActionAuthenticator resetWithSession:nonce];
             NSString *buildID = [NSString stringWithUTF8String:OPENCLAW_FACETIME_HELPER_BUILD_ID];

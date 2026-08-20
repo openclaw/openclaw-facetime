@@ -1,5 +1,16 @@
 #import <Foundation/Foundation.h>
 
+NS_ASSUME_NONNULL_BEGIN
+
+FOUNDATION_EXPORT NSString * _Nullable OpenClawFaceTimeLoadHelperTokenAtPath(
+    NSString *dylibPath,
+    NSError * _Nullable * _Nullable error
+);
+FOUNDATION_EXPORT NSString * _Nullable OpenClawFaceTimeLoadHelperTokenForImageAddress(
+    const void *imageAddress,
+    NSError * _Nullable * _Nullable error
+);
+
 typedef NS_ENUM(NSInteger, OpenClawFaceTimeActionAuthResult) {
     OpenClawFaceTimeActionAuthResultUnauthenticated,
     OpenClawFaceTimeActionAuthResultAccepted,
@@ -8,7 +19,7 @@ typedef NS_ENUM(NSInteger, OpenClawFaceTimeActionAuthResult) {
 
 @interface OpenClawFaceTimeActionAuthenticator : NSObject
 
-- (instancetype)initWithToken:(NSString *)token;
+- (instancetype)initWithProofMaterial:(NSString *)proofMaterial;
 - (void)resetWithSession:(NSString *)session;
 - (OpenClawFaceTimeActionAuthResult)consumeAction:(NSString *)action
                                     transactionID:(NSString *)transactionID
@@ -18,3 +29,5 @@ typedef NS_ENUM(NSInteger, OpenClawFaceTimeActionAuthResult) {
                                               auth:(NSString *)auth;
 
 @end
+
+NS_ASSUME_NONNULL_END

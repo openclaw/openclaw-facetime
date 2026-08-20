@@ -1,0 +1,80 @@
+name: native release verification
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Published tag to verify, for example v0.1.0"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-release-verification-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  source-build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag matches native version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$(scripts/native-version.sh)"
+          test "${RELEASE_TAG}" = "v${version}"
+      - name: Build ad-hoc-signed archive from source
+        run: make native-archive
+      - name: Verify source-built archive
+        run: make native-verify
+      - name: Upload non-release comparison artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: openclaw-facetime-source-build-${{ inputs.tag }}
+          path: |
+            bin/openclaw-facetime-macos-arm64.zip
+            bin/openclaw-facetime-macos-arm64.zip.sha256
+          if-no-files-found: error
+
+  published-asset:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify tag matches native version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          version="$(scripts/native-version.sh)"
+          test "${RELEASE_TAG}" = "v${version}"
+      - name: Download published native archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          mkdir -p bin
+          gh release download "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --pattern openclaw-facetime-macos-arm64.zip \
+            --pattern openclaw-facetime-macos-arm64.zip.sha256 \
+            --pattern openclaw-facetime-macos-arm64.zip.notarization.json \
+            --dir bin
+      - name: Verify Developer ID signatures and archive contract
+        env:
+          REQUIRE_DEVELOPER_ID: "1"
+          REQUIRE_NOTARIZATION_RECEIPT: "1"
+          REQUIRE_NOTARIZED_GATEKEEPER: "1"
+          EXPECTED_TEAM_ID: ${{ vars.MAC_RELEASE_TEAM_ID }}
+        run: make native-verify

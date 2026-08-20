@@ -21,6 +21,8 @@ describe("published plugin manifest", () => {
     expect(packageManifest.cpu).toEqual(["arm64"]);
     expect(packageManifest.files).toContain("dist/");
     expect(packageManifest.files).toContain("doctor-contract-api.ts");
+    expect(packageManifest.files).toContain("version.env");
+    expect(packageManifest.files).toContain("native/Resources/");
     expect(packageManifest.files).toContain("LICENSE");
     expect(packageManifest.files).toContain("THIRD_PARTY_NOTICES.md");
     expect(packageManifest.files).toContain("skills/");

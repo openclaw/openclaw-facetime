@@ -10,3 +10,4 @@ helper/FaceTimeHelper.xcodeproj/xcuserdata/
 DerivedData/
 native/.build/
 native-driver/.build/
+bin/
