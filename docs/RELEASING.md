@@ -87,14 +87,14 @@ Do not add them to this repository or pass secret values as command arguments.
    that can execute code from a selected release ref:
 
    ```sh
-   HOMEBREW_TAP_REPOSITORY=owner/homebrew-tap \
-     scripts/update-homebrew.sh vX.Y.Z
+   scripts/update-homebrew.sh vX.Y.Z
    ```
 
    The updater uses the immutable GitHub release URL and SHA-256, waits for the
    exact tap workflow run it dispatched, and fails if that run does not pass.
 
-The initial tap formula must be created from
+The target is the organization-owned `openclaw/homebrew-tap`, not a personal
+maintainer tap. The initial tap formula must be created from
 `packaging/homebrew/openclaw-facetime.rb`, replacing `RELEASE_SHA256` with the
 published archive digest. Later releases use `scripts/update-homebrew.sh` to
 update that formula in place. The formula installs all six archive files under

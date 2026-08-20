@@ -7,7 +7,7 @@ if [[ $# -ne 1 ]]; then
 fi
 
 tag="$1"
-tap_repository="${HOMEBREW_TAP_REPOSITORY:?Set HOMEBREW_TAP_REPOSITORY, for example owner/homebrew-tap}"
+tap_repository="${HOMEBREW_TAP_REPOSITORY:-openclaw/homebrew-tap}"
 formula="${HOMEBREW_FORMULA:-openclaw-facetime}"
 
 if [[ ! "${tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then

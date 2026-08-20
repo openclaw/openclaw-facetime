@@ -267,7 +267,7 @@ Once the first release is published in the tap, install the native components
 on the OpenClaw Mac with:
 
 ```sh
-brew install steipete/tap/openclaw-facetime
+brew install openclaw/tap/openclaw-facetime
 ```
 
 The plugin checks `OPENCLAW_FACETIME_NATIVE_DIR` first, then the Apple Silicon

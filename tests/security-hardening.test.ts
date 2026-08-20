@@ -69,6 +69,7 @@ describe("privileged FaceTime support boundaries", () => {
 
   it("fails closed on rejected notarization and an unexpected Developer ID team", () => {
     const notarize = readFileSync("scripts/sign-and-notarize.sh", "utf8");
+    const updateHomebrew = readFileSync("scripts/update-homebrew.sh", "utf8");
     const verifyRelease = readFileSync("scripts/verify-native-release.sh", "utf8");
     const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
 
@@ -96,5 +97,9 @@ describe("privileged FaceTime support boundaries", () => {
     expect(releaseWorkflow).toContain('REQUIRE_NOTARIZED_GATEKEEPER: "1"');
     expect(releaseWorkflow).toContain("ref: refs/tags/${{ inputs.tag }}");
     expect(releaseWorkflow).not.toContain("HOMEBREW_TAP_TOKEN");
+    expect(updateHomebrew).toContain(
+      'tap_repository="${HOMEBREW_TAP_REPOSITORY:-openclaw/homebrew-tap}"',
+    );
+    expect(updateHomebrew).not.toContain("steipete/homebrew-tap");
   });
 });
