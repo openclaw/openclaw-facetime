@@ -12,6 +12,16 @@ permissions:
   contents: read
 
 jobs:
+  driverless-audio-compile-only:
+    name: Driverless audio · pure tests and compile only (no signing or launches)
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - run: ./experiments/driverless-audio/check.sh
+
   plugin:
     runs-on: macos-15
     timeout-minutes: 30

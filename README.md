@@ -460,6 +460,10 @@ Agents using a restrictive tool profile must also allow the tool explicitly:
 
 ## Development checks
 
+The isolated [driverless return-audio experiments](experiments/driverless-audio/README.md)
+provide build-only probes and a manual evidence matrix. Neither path has completed
+live FaceTime proof; they are excluded from production packaging and release tooling.
+
 ```sh
 pnpm typecheck
 pnpm test
