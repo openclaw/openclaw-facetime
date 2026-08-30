@@ -29,12 +29,21 @@ type SpawnFn = (
 ) => PumpProcess;
 
 export const SOX_COMMAND =
-  ["/opt/homebrew/bin/sox", "/usr/local/bin/sox"].find((path) => existsSync(path)) ?? "sox";
+  [
+    process.env.HOME ? `${process.env.HOME}/.homebrew/bin/sox` : undefined,
+    "/opt/homebrew/bin/sox",
+    "/usr/local/bin/sox",
+  ].find((path): path is string => Boolean(path && existsSync(path))) ?? "sox";
 const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
+const CAPTURE_CLOSE_SAFE_FRAME = Buffer.from([4, 0, 0, 0, 4, 0, 0, 0, 0]);
 export const FACETIME_AUDIO_SAMPLE_RATE_HZ = 24_000;
 export const OPENCLAW_FEED_DEVICE = "OpenClaw-Feed";
 export const OPENCLAW_MIC_DEVICE = "OpenClaw-Mic";
 export const MAX_PLAYBACK_BUFFERED_BYTES = 2 * 1024 * 1024;
+// SoX expresses this buffer in bytes of the CoreAudio output format. The paired
+// device is 48 kHz float32 stereo, so 480 bytes is only 60 frames (1.25 ms) and
+// can underrun during ordinary scheduler jitter. 8 KiB is about 21 ms.
+export const SOX_COREAUDIO_BUFFER_BYTES = 8 * 1024;
 
 export type FaceTimeAudioOutput = {
   writeOutputAudio(audio: Buffer): void;
@@ -62,7 +71,7 @@ export function sanitizedAudioChildEnv(env: NodeJS.ProcessEnv = process.env): No
 
 export function buildSoxOutputArguments(
   deviceName = OPENCLAW_FEED_DEVICE,
-  bufferBytes = 480,
+  bufferBytes = SOX_COREAUDIO_BUFFER_BYTES,
 ): string[] {
   return [
     "-q",
@@ -287,7 +296,9 @@ export function startFaceTimeAudioPump(params: {
   });
   const captureProcess = spawnFn(params.captureBinary, [], {
     env: childEnv,
-    stdio: ["ignore", "pipe", "pipe"],
+    // The native helper treats stdin EOF as loss of its supervising parent.
+    // Keep the pipe open for the lifetime of the capture process.
+    stdio: ["pipe", "pipe", "pipe"],
   });
   let captureReadySettled = false;
   let routeReadySettled = false;
@@ -393,6 +404,14 @@ export function startFaceTimeAudioPump(params: {
     captureSuppressionActive = false;
     settleCaptureReady(new Error("FaceTime process-tap capture stopped before becoming ready"));
     settleRouteReady(new Error("FaceTime input route stopped before verification"));
+    // Mark the following EOF as an intentional shutdown. Without this frame,
+    // the helper treats a closed parent pipe as a crash and terminates the
+    // current FaceTime/Phone audio owner as a fail-safe.
+    try {
+      captureProcess.stdin?.write(CAPTURE_CLOSE_SAFE_FRAME);
+    } catch {
+      // The helper may already have exited; process termination below is still safe.
+    }
     await Promise.all([
       terminateProcess(captureProcess),
       output.stop(),
@@ -410,6 +429,7 @@ export function startFaceTimeAudioPump(params: {
     captureSuppressionActive = false;
     fail("FaceTime process-tap capture")(error);
   });
+  captureProcess.stdin?.on("error", fail("FaceTime process-tap parent pipe"));
   captureProcess.on("exit", (code, signal) => {
     captureSuppressionActive = false;
     if (!stopped) {

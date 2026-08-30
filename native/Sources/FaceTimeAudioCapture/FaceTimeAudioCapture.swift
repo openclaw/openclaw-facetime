@@ -434,7 +434,9 @@ private final class ConverterInput: @unchecked Sendable {
 }
 
 private final class PCMWriter: @unchecked Sendable {
-  private static let slotCount = 8
+  // Keep enough preallocated slots to absorb short scheduler stalls without
+  // allocating or blocking the realtime CoreAudio callback.
+  private static let slotCount = 64
   private static let slotFrames: AVAudioFrameCount = 8192
   private let targetFormat = AVAudioFormat(
     commonFormat: .pcmFormatInt16,
@@ -481,13 +483,22 @@ private final class PCMWriter: @unchecked Sendable {
   }
 
   func enqueue(_ audioBufferList: UnsafePointer<AudioBufferList>) -> Bool {
-    guard self.available.wait(timeout: .now()) == .success, self.pendingLock.try() else {
+    guard self.available.wait(timeout: .now()) == .success else {
+      return false
+    }
+    guard self.pendingLock.try() else {
+      // A slot was reserved before the lock attempt. Return its permit when a
+      // concurrent drain briefly owns the ring lock.
+      self.available.signal()
       return false
     }
     let slotIndex = self.nextSlot
     self.nextSlot = (self.nextSlot + 1) % Self.slotCount
     let source = UnsafeMutableAudioBufferListPointer(
       UnsafeMutablePointer(mutating: audioBufferList))
+    // AVAudioPCMBuffer narrows mDataByteSize to frameLength. Restore the full
+    // capacity before reusing a slot that previously held a shorter callback.
+    self.slots[slotIndex].frameLength = Self.slotFrames
     let target = UnsafeMutableAudioBufferListPointer(self.slots[slotIndex].mutableAudioBufferList)
     guard source.count == target.count else {
       self.pendingLock.unlock()
@@ -807,11 +818,11 @@ private final class NativePlayback: @unchecked Sendable {
 }
 
 private final class ParentCommandReader: @unchecked Sendable {
-  private let playback: NativePlayback
+  private let playback: NativePlayback?
   private let unexpectedEOF: () -> Void
   private var closeSafe = false
 
-  init(playback: NativePlayback, unexpectedEOF: @escaping () -> Void) {
+  init(playback: NativePlayback? = nil, unexpectedEOF: @escaping () -> Void) {
     self.playback = playback
     self.unexpectedEOF = unexpectedEOF
   }
@@ -840,13 +851,13 @@ private final class ParentCommandReader: @unchecked Sendable {
           let payload = buffered.subdata(in: 5..<frameLength)
           buffered.removeSubrange(0..<frameLength)
           if type == 1 {
-            self.playback.enqueue(payload)
+            self.playback?.enqueue(payload)
           } else if payload.count == 4 {
             let generation = payload.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
             if type == 2 {
-              self.playback.markDrain(generation: generation)
+              self.playback?.markDrain(generation: generation)
             } else if type == 3 {
-              self.playback.clear(generation: generation)
+              self.playback?.clear(generation: generation)
             } else if type == 4 {
               self.closeSafe = true
             }
@@ -1154,9 +1165,10 @@ private struct FaceTimeAudioCapture {
       }
       var currentProcess = selected[0]
       let ownerRef = CarrierOwnerRef(currentProcess)
-      let playback = try NativePlayback()
-      defer { playback.stop() }
-      let parentCommands = ParentCommandReader(playback: playback) {
+      // JavaScript owns playback through SoX. Constructing a second
+      // AVAudioEngine here can rebind OpenClaw-Feed after FaceTime has claimed
+      // the paired route and tear down the carrier on virtualized hosts.
+      let parentCommands = ParentCommandReader {
         ownerRef.terminateIfCurrent(requestedNames: requestedNames)
         lifecycle.requestStop()
       }

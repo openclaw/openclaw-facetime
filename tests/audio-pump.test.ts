@@ -5,6 +5,7 @@ import {
   MAX_PLAYBACK_BUFFERED_BYTES,
   OPENCLAW_FEED_DEVICE,
   sanitizedAudioChildEnv,
+  SOX_COREAUDIO_BUFFER_BYTES,
   startFaceTimeAudioPump,
 } from "../src/audio-pump.js";
 
@@ -40,6 +41,14 @@ class FakeProcess extends EventEmitter {
 }
 
 describe("FaceTime audio pump", () => {
+  it("uses a CoreAudio buffer large enough for ordinary scheduler jitter", () => {
+    const args = buildSoxOutputArguments();
+    const bufferIndex = args.indexOf("--buffer");
+
+    expect(SOX_COREAUDIO_BUFFER_BYTES).toBe(8 * 1024);
+    expect(args[bufferIndex + 1]).toBe(String(SOX_COREAUDIO_BUFFER_BYTES));
+  });
+
   it("captures caller audio with the process tap and reports hardware suppression ready", async () => {
     const processes: FakeProcess[] = [];
     const spawn = vi.fn((_command, _args, _options) => {
@@ -64,7 +73,7 @@ describe("FaceTime audio pump", () => {
       "/plugin/native/.build/release/facetime-audio-capture",
       [],
     ]);
-    expect(spawn.mock.calls[1]?.[2]?.stdio).toEqual(["ignore", "pipe", "pipe"]);
+    expect(spawn.mock.calls[1]?.[2]?.stdio).toEqual(["pipe", "pipe", "pipe"]);
     expect(spawn.mock.calls[2]?.slice(0, 2)).toEqual([
       "/usr/bin/caffeinate",
       ["-d", "-i", "-w", "1234"],
@@ -163,6 +172,9 @@ describe("FaceTime audio pump", () => {
       expect(wake?.kills).toEqual(["SIGTERM", "SIGKILL"]);
       expect(capture?.kills).toEqual(["SIGTERM", "SIGKILL"]);
       expect(secondOutput?.kills).toEqual(["SIGKILL"]);
+      expect(capture?.stdin.writes).toEqual([
+        Buffer.from([4, 0, 0, 0, 4, 0, 0, 0, 0]),
+      ]);
       expect(capture?.stdin.ended).toBe(true);
       expect(secondOutput?.stdin.ended).toBe(true);
     } finally {

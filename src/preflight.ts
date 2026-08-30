@@ -5,6 +5,7 @@ import {
   FACETIME_AUDIO_SAMPLE_RATE_HZ,
   OPENCLAW_FEED_DEVICE,
   OPENCLAW_MIC_DEVICE,
+  SOX_COREAUDIO_BUFFER_BYTES,
 } from "./audio-pump.js";
 import type { FaceTimeConfig } from "./config.js";
 import { formatErrorMessage } from "./errors.js";
@@ -78,7 +79,12 @@ async function checkSox(params: {
   runCommandWithTimeout: RunCommandWithTimeout;
   checks: FaceTimePreflightCheck[];
 }) {
-  for (const command of ["/opt/homebrew/bin/sox", "/usr/local/bin/sox", "sox"]) {
+  for (const command of [
+    process.env.HOME ? `${process.env.HOME}/.homebrew/bin/sox` : undefined,
+    "/opt/homebrew/bin/sox",
+    "/usr/local/bin/sox",
+    "sox",
+  ].filter((command): command is string => Boolean(command))) {
     const result = await params.runCommandWithTimeout([command, "--version"], {
       timeoutMs: 5_000,
     });
@@ -143,7 +149,8 @@ async function checkPairedDriverLoopback(params: {
   const feed = shellSingleQuote(OPENCLAW_FEED_DEVICE);
   const script = `
 set -euo pipefail
-if [[ -x /opt/homebrew/bin/sox ]]; then sox=/opt/homebrew/bin/sox
+if [[ -x "$HOME/.homebrew/bin/sox" ]]; then sox="$HOME/.homebrew/bin/sox"
+elif [[ -x /opt/homebrew/bin/sox ]]; then sox=/opt/homebrew/bin/sox
 elif [[ -x /usr/local/bin/sox ]]; then sox=/usr/local/bin/sox
 else sox=sox
 fi
@@ -158,7 +165,7 @@ trap cleanup EXIT
 "$sox" -q -t coreaudio ${microphone} -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" trim 0 3 &
 recpid=$!
 sleep 0.3
-"$sox" -q --buffer 480 -t raw -r ${FACETIME_AUDIO_SAMPLE_RATE_HZ} -c 1 -e signed-integer -b 16 -L "$source" -t coreaudio ${feed}
+"$sox" -q --buffer ${SOX_COREAUDIO_BUFFER_BYTES} -t raw -r ${FACETIME_AUDIO_SAMPLE_RATE_HZ} -c 1 -e signed-integer -b 16 -L "$source" -t coreaudio ${feed}
 wait "$recpid" || true
 stat="$("$sox" -q -t raw -r 48000 -c 1 -e signed-integer -b 16 -L "$capture" -n stat 2>&1)"
 rms="$(printf "%s\\n" "$stat" | awk '/RMS[[:space:]]+amplitude/ { print $3; exit }')"

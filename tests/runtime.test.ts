@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
     cancelOutgoingCall: vi.fn(),
   },
   startTalk: vi.fn(),
+  assertPairedAudioTransport: vi.fn(async () => {}),
 }));
 
 vi.mock("../src/helper-rpc.js", () => ({
@@ -70,7 +71,7 @@ vi.mock("../src/plugin-paths.js", () => ({
 }));
 
 vi.mock("../src/paired-audio-transport.js", () => ({
-  assertPairedAudioTransport: vi.fn(async () => {}),
+  assertPairedAudioTransport: mocks.assertPairedAudioTransport,
 }));
 
 vi.mock("../src/driver-setup.js", () => ({
@@ -190,6 +191,7 @@ describe("FaceTime runtime call sequencing", () => {
 
     mocks.helperParams?.onMessage(incomingCall());
     await vi.waitFor(() => expect(talk.readyForAudio).toHaveBeenCalledOnce());
+    expect(mocks.assertPairedAudioTransport).toHaveBeenCalledOnce();
 
     expect(order).toEqual([
       "suppression-ready",
@@ -210,6 +212,18 @@ describe("FaceTime runtime call sequencing", () => {
       "start-transmission",
       "activate",
     ]);
+    await runtime.stop();
+  });
+
+  it("does not reopen paired CoreAudio devices after the carrier is active", async () => {
+    const talk = createTalkDriver({});
+    mocks.startTalk.mockResolvedValueOnce(talk);
+    const runtime = await createRuntime();
+
+    mocks.helperParams?.onMessage(incomingCall(1));
+    await vi.waitFor(() => expect(talk.activate).toHaveBeenCalledOnce());
+
+    expect(mocks.assertPairedAudioTransport).not.toHaveBeenCalled();
     await runtime.stop();
   });
 

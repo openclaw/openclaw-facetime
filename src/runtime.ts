@@ -533,7 +533,15 @@ export async function createFaceTimeRuntime(params: {
           assertCallOpen();
           await access(captureBinary, constants.X_OK);
           assertCallOpen();
-          await assertPairedAudioTransport(params.runtime.system.runCommandWithTimeout);
+          if (!call.carrierHangupRequired) {
+            // Opening both paired devices is a useful pre-answer probe, but it
+            // can steal them from FaceTime once a carrier is already active.
+            await assertPairedAudioTransport(params.runtime.system.runCommandWithTimeout);
+          } else {
+            params.logger.debug?.(
+              `[facetime] skipping paired-device open probe for active call ${call.callUUID}`,
+            );
+          }
           assertCallOpen();
           call.audioReady = true;
           call.audioTransport = {

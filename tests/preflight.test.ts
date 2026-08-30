@@ -80,6 +80,10 @@ describe("FaceTime preflight", () => {
       ["paired-driver-loopback", true, true],
       ["realtime-provider", true, true],
     ]);
+    const loopbackCall = runCommandWithTimeout.mock.calls.find(
+      ([argv]) => argv[0] === "/bin/bash",
+    );
+    expect(loopbackCall?.[0]?.[2]).toContain("--buffer 8192");
   });
 
   it("fails provider readiness for an unresolved configured SecretRef", async () => {
@@ -146,12 +150,20 @@ describe("FaceTime preflight", () => {
       stderr: "ENOENT",
     });
 
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_API_KEY;
     const result = await runFaceTimePreflight({
       config: resolveFaceTimeConfig({ whitelistHandles: ["omar@example.com"] }),
       fullConfig: {} as any,
       runtime: runtimeWithCommands(runCommandWithTimeout),
       helperConnected: false,
       captureBinary: "/missing/capture",
+    }).finally(() => {
+      if (previousOpenAiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiKey;
+      }
     });
 
     expect(result.ok).toBe(false);
