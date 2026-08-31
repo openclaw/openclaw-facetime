@@ -34,9 +34,9 @@ repository publishes only the signed native helpers consumed by that plugin.
 | macOS API floor | macOS 14.4 or later |
 | Live-tested host | macOS 26.4 |
 | OpenClaw | Host plugin API `>=2026.7.2-beta.4` |
-| Node.js | `22.22.3`, `24.15.0`, `25.9.0`, or a later compatible release in those lines |
-| Package manager | pnpm 10.34.5 through Corepack |
-| Build tools | Full Xcode at `/Applications/Xcode.app`; Command Line Tools alone are insufficient |
+| Node.js | `22.22.3+` in 22.x, `24.15.0+` in 24.x, or `25.9.0+`; CI uses Node.js 26 |
+| Package manager | pnpm 11.24.0 through Corepack |
+| Build tools | Full Xcode at `/Applications/Xcode.app`, or set `DEVELOPER_DIR` for another Xcode installation; Command Line Tools alone are insufficient |
 | Runtime tools | SoX |
 | Apple services | FaceTime signed in for the logged-in macOS user |
 | Realtime provider | OpenAI Platform API key with Realtime API access |

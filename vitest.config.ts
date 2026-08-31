@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { defineConfig } from "vitest/config";
 
-const localPluginSdkRoot = path.resolve(__dirname, "../openclaw/src/plugin-sdk");
+const localPluginSdkRoot = path.resolve(import.meta.dirname, "../openclaw/src/plugin-sdk");
 
 export default defineConfig({
   resolve: {

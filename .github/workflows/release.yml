@@ -37,7 +37,7 @@ jobs:
           echo "tag=v$version" >>"$GITHUB_OUTPUT"
       - name: Resolve protected release target
         id: source
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TAG: ${{ steps.input.outputs.tag }}
         with:
@@ -68,12 +68,12 @@ jobs:
             }
             core.setOutput('target-sha', targetSha);
             core.setOutput('tag-object-sha', tagObjectSha);
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ steps.source.outputs.target-sha }}
       - name: Verify version and independent CI
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TAG: ${{ steps.input.outputs.tag }}
           TARGET_SHA: ${{ steps.source.outputs.target-sha }}
@@ -99,7 +99,7 @@ jobs:
       contents: write
     steps:
       - name: Create or verify tag
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           EXPECTED_TAG_OBJECT: ${{ needs.validate.outputs.tag-object-sha }}
           TAG: ${{ needs.validate.outputs.tag }}
@@ -136,7 +136,7 @@ jobs:
     outputs:
       artifact-name: ${{ steps.output.outputs.artifact-name }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.validate.outputs.tag }}
@@ -186,7 +186,7 @@ jobs:
           scripts/sign-and-notarize.sh
           REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
             EXPECTED_TEAM_ID=FWJYW4S8P8 make native-verify
-      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: native-release-${{ github.run_id }}-${{ github.run_attempt }}
           path: bin/openclaw-facetime-macos-arm64.zip*
@@ -208,7 +208,7 @@ jobs:
       actions: read
       contents: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           ref: ${{ needs.validate.outputs.tag }}

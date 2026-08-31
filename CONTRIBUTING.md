@@ -10,9 +10,9 @@ security-sensitive.
 You need:
 
 - an Apple Silicon Mac
-- full Xcode at `/Applications/Xcode.app`
+- full Xcode at `/Applications/Xcode.app` (set `DEVELOPER_DIR` for another Xcode installation)
 - a supported Node.js version from `package.json`
-- pnpm 10.34.5 through Corepack
+- pnpm 11.24.0 through Corepack
 - SoX
 
 Install dependencies and build:

@@ -52,7 +52,7 @@ product_dir="$(swift build \
 
 while IFS= read -r rpath; do
   case "${rpath}" in
-    /Applications/Xcode.app/*|/Library/Developer/*)
+    /Applications/Xcode*.app/*|/Library/Developer/*)
       /usr/bin/install_name_tool -delete_rpath "${rpath}" \
         "${dist_dir}/facetime-audio-capture"
       ;;

@@ -1,11 +1,11 @@
 minimumReleaseAge: 2880
-onlyBuiltDependencies:
-  - "@google/genai"
-  - "@openclaw/fs-safe"
-  - koffi
-  - openclaw
-  - protobufjs
-  - tree-sitter-bash
+allowBuilds:
+  "@google/genai": true
+  "@openclaw/fs-safe": true
+  koffi: true
+  openclaw: true
+  protobufjs: true
+  tree-sitter-bash: true
 overrides:
-  tar: 7.5.21
-  vite: 8.0.16
+  tar: 7.5.22
+  vite: 8.2.2
