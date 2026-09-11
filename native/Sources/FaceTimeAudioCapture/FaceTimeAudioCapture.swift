@@ -1165,9 +1165,9 @@ private struct FaceTimeAudioCapture {
       }
       var currentProcess = selected[0]
       let ownerRef = CarrierOwnerRef(currentProcess)
-      // JavaScript owns playback through SoX. Constructing a second
-      // AVAudioEngine here can rebind OpenClaw-Feed after FaceTime has claimed
-      // the paired route and tear down the carrier on virtualized hosts.
+      // The OpenClaw host owns playback in a separate SoX process. Constructing
+      // another AVAudioEngine here can rebind OpenClaw-Feed after FaceTime has
+      // claimed the paired route and tear down the carrier.
       let parentCommands = ParentCommandReader {
         ownerRef.terminateIfCurrent(requestedNames: requestedNames)
         lifecycle.requestStop()

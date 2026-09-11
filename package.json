@@ -1,7 +1,8 @@
 {
-  "name": "@openclaw/facetime",
-  "version": "2026.5.10-beta.1",
-  "description": "Private FaceTime realtime voice carrier for OpenClaw agents",
+  "name": "@openclaw/facetime-native-harness",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Private build, security, and release harness for OpenClaw FaceTime native components",
   "license": "MIT",
   "author": "OpenClaw contributors",
   "homepage": "https://github.com/openclaw/openclaw-facetime#readme",
@@ -11,30 +12,13 @@
   "keywords": [
     "facetime",
     "openclaw",
-    "openclaw-plugin",
-    "realtime-voice"
+    "native-helper",
+    "macos"
   ],
   "repository": {
     "type": "git",
     "url": "https://github.com/openclaw/openclaw-facetime"
   },
-  "files": [
-    "dist/",
-    "docs/",
-    "helper/",
-    "native/Package.swift",
-    "native/Checks/",
-    "native/Resources/",
-    "native/Sources/",
-    "scripts/",
-    "skills/",
-    "doctor-contract-api.ts",
-    "version.env",
-    "LICENSE",
-    "THIRD_PARTY_NOTICES.md",
-    "README.md",
-    "openclaw.plugin.json"
-  ],
   "os": [
     "darwin"
   ],
@@ -43,7 +27,6 @@
   ],
   "type": "module",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
     "build:capture": "bash scripts/build-capture.sh",
     "build:driver": "bash scripts/build-driver.sh",
     "build:helper:macabi": "bash scripts/build-helper-macabi.sh",
@@ -54,45 +37,10 @@
     "inject:helper": "bash scripts/inject-helper.sh",
     "inject:helper:phone": "bash scripts/inject-helper.sh --app Phone",
     "inject:helper:terminal": "bash scripts/inject-helper-terminal.sh",
-    "prepack": "pnpm build",
-    "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run tests --passWithNoTests"
   },
-  "dependencies": {
-    "typebox": "1.3.20"
-  },
   "devDependencies": {
-    "@types/node": "26.4.0",
-    "openclaw": "2026.7.2-beta.3",
-    "typescript": "^7.0.2",
     "vitest": "^4.1.11"
-  },
-  "peerDependencies": {
-    "openclaw": ">=2026.7.2-beta.4"
-  },
-  "peerDependenciesMeta": {
-    "openclaw": {
-      "optional": true
-    }
-  },
-  "openclaw": {
-    "extensions": [
-      "./dist/index.js"
-    ],
-    "runtimeExtensions": [
-      "./dist/index.js"
-    ],
-    "install": {
-      "npmSpec": "@openclaw/facetime",
-      "defaultChoice": "local",
-      "minHostVersion": ">=2026.7.2-beta.4"
-    },
-    "compat": {
-      "pluginApi": ">=2026.7.2-beta.4"
-    },
-    "build": {
-      "openclawVersion": "2026.7.2-beta.3"
-    }
   },
   "packageManager": "pnpm@11.24.0",
   "engines": {

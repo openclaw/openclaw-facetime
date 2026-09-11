@@ -1,6 +1,8 @@
 # OpenClaw FaceTime Release Handoff
 
-The repository owns only the native FaceTime binaries, their source, signing, notarization, and releases. The FaceTime plugin lives in `openclaw/openclaw`, and the install formula lives in `openclaw/homebrew-tap`.
+The repository owns only the native FaceTime binaries, their source, signing,
+notarization, and releases. The FaceTime plugin lives in `openclaw/openclaw`,
+and the install formula lives in `openclaw/homebrew-tap`.
 
 The release workflow is locked to this signing identity:
 
@@ -8,7 +10,11 @@ The release workflow is locked to this signing identity:
 Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)
 ```
 
-It builds `openclaw-facetime-macos-arm64.zip`, signs both Mach-O files, notarizes the ZIP, independently verifies the draft release and online notarization tickets, publishes the release, then dispatches the OpenClaw Homebrew tap updater.
+It builds `openclaw-facetime-macos-arm64.zip`, signs both Mach-O files, notarizes
+the ZIP, independently verifies the release assets and online notarization
+tickets, publishes the release, then dispatches the OpenClaw Homebrew tap
+updater. A retry resumes an existing draft or published release rather than
+creating a second release.
 
 ## Foundation actions required
 
@@ -36,7 +42,10 @@ Grant these OpenClaw organization secrets to `openclaw/openclaw-facetime`:
 | `ASC_PRIVATE_KEY_P8` | Complete App Store Connect `.p8` private key contents |
 | `HOMEBREW_TAP_TOKEN` | Fine-grained token or GitHub App token able to dispatch workflows in `openclaw/homebrew-tap` |
 
-The Apple API key must be authorized to notarize software for Team ID `FWJYW4S8P8`. The tap token only needs Actions write access to `openclaw/homebrew-tap`; that repository's own `GITHUB_TOKEN` performs the formula commit.
+The Apple API key must be authorized to notarize software for Team ID
+`FWJYW4S8P8`. The tap token only needs Actions write access to
+`openclaw/homebrew-tap`; that repository's own `GITHUB_TOKEN` performs the
+formula commit.
 
 Secret names can be checked without exposing values:
 
@@ -57,18 +66,34 @@ In `openclaw/homebrew-tap`:
 1. Keep `.github/workflows/update-formula.yml` enabled for `workflow_dispatch`.
 2. Allow that workflow's repository `GITHUB_TOKEN` to write contents.
 
-### 4. Publish the first release before seeding the formula
+### 4. Bootstrap the custom formula through the tap repository
 
-The custom FaceTime formula installs a seven-file, arm64-only native payload into `libexec`. The tap's generic missing-formula generator is intended for ordinary four-platform command-line tools and must not seed this formula.
+The custom FaceTime formula installs a seven-file, arm64-only native payload
+into `libexec`. The tap's generic missing-formula generator is intended for
+ordinary four-platform command-line tools and must not seed this formula.
 
-For the first release:
+The native workflow deliberately refuses to create a tag until the tap's
+allowlisted `formula_profile=openclaw-facetime` capability is present on tap
+`main` and its profile is byte-identical to
+`packaging/homebrew/openclaw-facetime.rb`. This keeps `HOMEBREW_TAP_TOKEN`
+limited to Actions write and prevents the native workflow from bypassing tap
+review, validation, or branch protection.
 
-1. Merge the release workflow and native protocol changes with green CI.
-2. Run `.github/workflows/release.yml` from `main` with version `0.1.0`.
-3. Confirm the release asset is anonymously downloadable.
-4. Replace `RELEASE_SHA256` in `packaging/homebrew/openclaw-facetime.rb` with the published ZIP checksum.
-5. Add that formula as `Formula/openclaw-facetime.rb` in `openclaw/homebrew-tap` and merge it after tap CI passes.
-6. Future releases can use the automated tap handoff.
+Before the first native release, merge a separate `openclaw/homebrew-tap` change
+that adds the safe custom arm64 profile to `update-formula.yml`. The profile
+must be allowlisted by name and must own the seven-file template, validation,
+and commit. Review it against
+`packaging/homebrew/openclaw-facetime.rb`, which records the native archive
+contract without granting the native workflow tap write access.
+
+Then:
+
+1. Merge the tap profile change after its own review and CI passes.
+2. Merge the native release and protocol changes with green CI.
+3. Run `.github/workflows/release.yml` from `main` with version `0.1.0`.
+4. Confirm the release asset is anonymously downloadable and the tap profile
+   seeded or updated its URL and SHA-256.
+5. Install and verify the formula on an Apple Silicon Mac.
 
 ### 5. Verify the complete user path
 
@@ -79,7 +104,8 @@ brew update
 brew install openclaw/tap/openclaw-facetime
 ```
 
-Then verify both installed binaries retain the Foundation signature and Apple notarization ticket:
+Then verify both installed binaries retain the Foundation signature and Apple
+notarization ticket:
 
 ```bash
 codesign --verify --strict --check-notarization -R=notarized \
@@ -88,7 +114,9 @@ codesign --verify --strict --check-notarization -R=notarized \
   /opt/homebrew/opt/openclaw-facetime/libexec/FaceTimeHelper.dylib
 ```
 
-Finally install or enable the FaceTime plugin from OpenClaw and run its setup flow. The plugin validates `native-protocol.env` before using the installed helpers, so incompatible plugin and native releases fail closed.
+Finally install or enable the FaceTime plugin from OpenClaw and run its setup
+flow. The plugin validates `native-protocol.env` before using the installed
+helpers, so incompatible plugin and native releases fail closed.
 
 ## Security notes
 

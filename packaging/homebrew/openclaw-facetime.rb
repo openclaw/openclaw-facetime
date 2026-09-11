@@ -7,6 +7,7 @@ class OpenclawFacetime < Formula
 
   depends_on arch: :arm64
   depends_on macos: :sonoma
+  depends_on "sox"
 
   skip_clean "libexec/facetime-audio-capture", "libexec/FaceTimeHelper.dylib"
 
@@ -24,11 +25,11 @@ class OpenclawFacetime < Formula
   def caveats
     <<~EOS
       This formula installs native helpers consumed by the OpenClaw FaceTime
-      plugin. It does not install or enable the plugin itself.
+      plugin and SoX for the host-owned playback process. It does not install or
+      enable the plugin itself.
 
-      Install the plugin separately, then run:
-        openclaw plugins enable facetime
-        openclaw gateway call facetime.setup --json
+      Install and configure the plugin separately:
+        https://docs.openclaw.ai/plugins/facetime
 
       Call control requires SIP debugging restrictions disabled and Developer
       Tools access enabled. The separately built GPL-derived audio driver is

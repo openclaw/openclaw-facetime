@@ -1,495 +1,124 @@
-# OpenClaw FaceTime
+# OpenClaw FaceTime native components
 
-This repository is the canonical native implementation and binary release for
-the FaceTime plugin in `openclaw/openclaw`.
+This repository owns the native binaries, build scripts, signing, notarization,
+and Homebrew release contract used by the FaceTime plugin in
+[`openclaw/openclaw`](https://github.com/openclaw/openclaw).
 
-It combines call control, OpenClaw agent consultation, and the audio path proven
-on macOS 26.4:
+The TypeScript plugin, configuration, tools, skills, runtime lifecycle, and user
+documentation live in the OpenClaw repository. Start with the canonical
+[FaceTime plugin guide](https://docs.openclaw.ai/plugins/facetime) and
+[recovery guide](https://docs.openclaw.ai/plugins/facetime-recovery).
 
-```text
-caller -> FaceTime or Phone -> Core Audio process tap -> OpenClaw Realtime
-caller <- FaceTime or Phone <- OpenClaw-Mic <- OpenClaw-Feed <- OpenClaw Realtime
-```
+## Native boundary
 
-The injected FaceTime helper owns call events, answering, transmission, and hangup. The Swift capture helper accepts only Apple-signed FaceTime, Phone, or `avconferenced` identities and taps the single process reporting active audio output. Model speech is written to the output-only `OpenClaw-Feed`, then mirrored by the paired driver to the input-only `OpenClaw-Mic` selected in the call app.
+The release archive contains exactly seven files:
 
-This avoids the duplex BlackHole route that current FaceTime Voice Processing suppresses. The plugin never changes the Mac's default input or output devices.
+- `facetime-audio-capture`, an arm64 Core Audio process-tap executable
+- `FaceTimeHelper.dylib`, an arm64e + arm64 Mac Catalyst injected helper
+- `FaceTimeHelper.build-id`, which binds the helper source and endpoint contract
+- `native-protocol.env`, the plugin/native compatibility version
+- `VERSION`
+- `LICENSE`
+- `THIRD_PARTY_NOTICES.md`
 
-## Beta status and security boundary
+The injected helper owns native FaceTime and Phone call control. The capture
+executable accepts only Apple-signed FaceTime, Phone, or `avconferenced`
+processes and captures the active call process. The OpenClaw plugin owns every
+higher-level policy and runtime decision.
 
-This is an experimental private-API plugin for a dedicated Apple Silicon Mac.
-It injects an authenticated helper into FaceTime and Phone, captures call audio,
-and gives allowlisted callers the configured OpenClaw agent's owner-level
-workspace and tools. Read the [SIP requirement](#system-integrity-protection-requirement)
-and [access-control model](#identity-and-access-control) before enabling it.
-
-The TypeScript plugin is owned and distributed by `openclaw/openclaw`. This
-repository publishes only the signed native helpers consumed by that plugin.
+This is an experimental private-API integration for a dedicated Apple Silicon
+Mac. It requires debugger attachment to protected Apple applications. Review
+the security tradeoff and recovery steps in the canonical OpenClaw docs before
+using it.
 
 ## Requirements
 
-| Requirement | Supported or tested state |
-| --- | --- |
-| Hardware | Apple Silicon only; native release archive is arm64 with an arm64e + arm64 injected helper |
-| macOS API floor | macOS 14.4 or later |
-| Live-tested host | macOS 26.4 |
-| OpenClaw | Host plugin API `>=2026.7.2-beta.4` |
-| Node.js | `22.22.3+` in 22.x, `24.15.0+` in 24.x, or `25.9.0+`; CI uses Node.js 26 |
-| Package manager | pnpm 11.24.0 through Corepack |
-| Build tools | Full Xcode at `/Applications/Xcode.app`, or set `DEVELOPER_DIR` for another Xcode installation; Command Line Tools alone are insufficient |
-| Runtime tools | SoX |
-| Apple services | FaceTime signed in for the logged-in macOS user |
-| Realtime provider | OpenAI Platform API key with Realtime API access |
-| Call policy | Consent from everyone before capturing or processing audio |
+- Apple Silicon and macOS 14.4 or later
+- full Xcode, normally at `/Applications/Xcode.app`
+- Node.js and pnpm 11.24.0 only for this repository's small test harness
 
-FaceTime video uses FaceTime. On the live-tested macOS 26.4 route, FaceTime
-Audio uses Phone. Treat other macOS versions as unverified until both call types
-pass the live acceptance procedure.
-
-## Native development
-
-Review the source, then clone and validate the native package:
-
-```sh
-git clone https://github.com/openclaw/openclaw-facetime.git
-cd openclaw-facetime
-corepack enable
-brew install sox
-pnpm install --frozen-lockfile
-pnpm build
-make native-archive
-make native-verify
-```
-
-`--force` confirms that you reviewed and trust this arbitrary local source. It
-does not bypass OpenClaw's install policy or other safety checks. A linked
-install follows this checkout, so rebuild after pulling updates.
-
-## Configure OpenClaw
-
-Merge this entry into your OpenClaw configuration. Do not replace existing
-values in `plugins.allow`; add `facetime` alongside the plugins already there.
-
-```json5
-{
-  plugins: {
-    allow: ["facetime"],
-    entries: {
-      facetime: {
-        enabled: true,
-        config: {
-          whitelistHandles: ["owner@example.com"],
-          realtime: {
-            provider: "openai",
-            model: "gpt-realtime-2.1",
-            voice: "marin",
-            sessionKey: "main",
-            toolPolicy: "owner",
-          },
-        },
-      },
-    },
-  },
-}
-```
-
-Every `whitelistHandles` entry is an authenticated owner identity. Use the
-exact email addresses and E.164 phone numbers FaceTime reports for you. Do not
-add a guest or anyone who should have reduced privileges.
-
-OpenAI Realtime uses Platform API billing. A ChatGPT subscription or Codex
-OAuth login does not replace a Platform API key. The plugin resolves an
-OpenAI key from its plugin-scoped `apiKey` SecretRef, the configured OpenClaw
-OpenAI model provider, or `OPENAI_API_KEY`. Use `openclaw configure` to store
-the credential through OpenClaw's supported secret path. Do not put a plaintext
-key in committed configuration.
-
-`gpt-realtime-2.1` is the default. There is currently no automatic model
-fallback, so configure another OpenAI Realtime model explicitly if your account
-does not have access to it.
-
-Restart and inspect the live plugin:
-
-```sh
-openclaw gateway restart
-openclaw plugins inspect facetime --runtime --json
-openclaw gateway call facetime.setup --json
-```
-
-Older local builds used `plugins.entries.facetime.config.audio` for duplex
-BlackHole routing. That property is retired. `openclaw doctor --fix` removes
-only that obsolete object and preserves the rest of the FaceTime configuration.
-
-## Build the native audio path
-
-Build and sign the Core Audio process-tap helper:
-
-```sh
-pnpm build:capture
-```
-
-Production installs use the signed and notarized archive. This command is for
-native development and produces an ad-hoc-signed local build.
-
-Install the pinned BlackHole v0.7.1 source as the paired OpenClaw driver:
-
-```sh
-openclaw gateway call facetime.installDriver --json
-system_profiler SPAudioDataType | grep -E 'OpenClaw-(Mic|Feed)'
-```
-
-This idempotent setup action builds the driver locally when needed, presents the
-normal macOS administrator prompt, verifies the installed bundle, and restarts
-Core Audio only when the installed recipe is missing or stale. The plugin
-rejects the action during an active or pending managed call. You can inspect it
-without changing the system:
-
-```sh
-openclaw gateway call facetime.driverStatus --json
-```
-
-`facetime.installDriver` acknowledges as soon as setup starts so the gateway
-call does not time out while the administrator prompt is open. Follow
-`driverInstall.phase` in `facetime.status`; it becomes `succeeded` or `failed`
-when setup finishes.
-
-For development, `pnpm build:driver` and `pnpm install:driver` invoke the same
-build and installation path.
-
-The first process-tap check prompts for Screen & System Audio Recording permission. Grant it to the app that runs OpenClaw, quit that app completely, reopen it, and rerun preflight.
-
-## Driver licensing boundary
-
-The generated `OpenClawBridge.driver` is a separate modified build of GPL-3.0 BlackHole. It is ignored by Git and excluded from the npm package. The build script pins and verifies the upstream archive, then records the changed identity, device names, visibility, and input/output capabilities in its compiler flags.
-
-Do not commit or silently distribute the generated driver. Distribution requires compliance with BlackHole's GPL-3.0 terms, a separate license from Existential Audio, or a replacement driver with a compatible license.
-
-## Build the TypeScript development harness
-
-```sh
-pnpm build
-```
-
-The production TypeScript plugin lives in `openclaw/openclaw`. This repository
-retains a development harness so native protocol changes can be tested against
-their JavaScript peer before release.
-
-### System Integrity Protection requirement
-
-The plugin intentionally uses the same kind of private-API deployment boundary
-as `imsg`: an injected helper reaches call control that macOS does not expose
-through public APIs. FaceTime and Phone are protected Apple apps, so LLDB cannot
-attach while SIP debugging restrictions remain enabled.
-
-**Changing SIP is a real security tradeoff.** Debugger attachment to protected
-processes increases the attack surface of the whole Mac. Use a dedicated
-OpenClaw Mac, keep it patched and physically controlled, and do not install
-unrelated software on it. The plugin detects this state but never changes it.
-
-The verified FaceTime configuration is narrower than the full SIP disablement
-commonly used by `imsg`. It leaves the other SIP protections enabled and
-disables only debugging restrictions:
-
-1. Shut down the Apple Silicon Mac.
-2. Hold the power button until startup options appear.
-3. Choose Options, authenticate, and open Terminal from the Utilities menu.
-4. Run:
-
-```sh
-csrutil enable --without debug
-```
-
-5. Reboot and verify:
-
-```sh
-csrutil status
-```
-
-The output must report `Debugging Restrictions: disabled`. A full
-`csrutil disable`, a Library Validation override, and custom boot arguments
-were not required in the successful macOS 26.4 acceptance run. Do not weaken
-additional system protections to work around an injection failure.
-
-Enable Developer Tools mode once from an interactive Terminal before the first
-automatic injection:
-
-```sh
-sudo /usr/sbin/DevToolsSecurity -enable
-```
-
-macOS can also request permission for the OpenClaw host to control developer
-tools the first time LLDB attaches. Grant that prompt once.
-
-If you do not accept the SIP tradeoff, leave debugging restrictions enabled and
-do not enable this plugin. Unlike `imsg` basic mode, FaceTime has no public-API
-fallback for monitoring, answering, dialing, or controlling calls. Setup will
-remain `action-required`, and the helper will not attach.
-
-To return the dedicated Mac to standard SIP policy later, boot into Recovery,
-run `csrutil enable`, and reboot. The FaceTime plugin will stop working until
-debugging restrictions are disabled again.
-
-Manual build and injection commands remain available for development or
-recovery:
-
-```sh
-pnpm build:helper:macabi
-pnpm inject:helper
-pnpm inject:helper:phone
-```
-
-If a non-interactive agent owns the terminal, use:
-
-```sh
-pnpm inject:helper:terminal
-```
-
-Each helper connects to `127.0.0.1` on `45670 + uid - 501`. The connection is
-authenticated with a locally generated key. Release helpers do not embed that
-key: injection places it in a private one-use sidecar beside the copied dylib,
-and the helper refuses to connect unless that file is owned by the current
-user, mode 0600, a regular non-symlink file, and a valid 256-bit token.
-FaceTime owns incoming video calls, while Phone owns incoming FaceTime Audio
-calls on the live-tested macOS 26.4 route.
-
-## Native release process
-
-The native capture executable and injected helper now use the same release
-shape as `imsg`: a versioned archive built from repository source, Developer ID
-signatures, Apple notarization, independent archive verification, and a
-Homebrew formula handoff. The current artifact is Apple Silicon only because
-the supported helper requires arm64e.
-
-Once the first release is published in the tap, install the native components
-on the OpenClaw Mac with:
+Production installation uses the signed and notarized Homebrew artifact:
 
 ```sh
 brew install openclaw/tap/openclaw-facetime
 ```
 
-The OpenClaw plugin uses the installed Homebrew prefix, validates native
-protocol version 1, and stages the signed helper with a fresh per-machine
-authentication sidecar. It does not compile native code from the plugin.
+The formula also installs SoX for the OpenClaw host's separate playback process.
+Install and configure the plugin separately by following the canonical FaceTime
+plugin guide.
 
-Release engineering instructions are in `docs/RELEASING.md`. This pipeline does
-not bundle the GPL-derived audio driver, and it does not make the release
-available until a maintainer publishes a signed archive and configures the
-Homebrew tap.
+## Build and verify
 
-## Identity and access control
-
-The Realtime voice layer derives its identity and persona from the configured
-agent's `IDENTITY.md`, `USER.md`, and `SOUL.md`. Delegated turns use that same
-agent, `sessionKey`, full workspace context, memory, tools, and approval
-policies. The plugin does not maintain a separate "Lobster" persona or a second
-privilege model.
-
-Inbound callers are admitted only when the canonical FaceTime handle matches
-`whitelistHandles`. An admitted caller is marked `senderIsOwner: true`, and
-owner tool policy is available only for that allowlisted call. Unknown callers
-are rejected before a Realtime or delegated-agent session starts. Outbound
-calls are restricted to the same allowlist and also require a trusted one-shot
-OpenClaw plugin approval.
-
-## Route FaceTime or Phone
-
-Set this route once in the app that owns the call:
-
-- microphone: `OpenClaw-Mic`
-- output: physical speakers or headphones
-- macOS system input: any physical microphone
-- macOS system output: any physical device
-
-FaceTime video calls use FaceTime. On macOS 26.4, FaceTime Audio calls use
-Phone. The native process tap first suppresses the call app's hardware
-playback, then the helper answers with the uplink muted. Only after answer does
-the plugin connect the Realtime provider, verify that `OpenClaw-Mic` is the
-active call process's only input device and that its outputs are physical, and
-enable transmission. This keeps provider startup latency out of the
-incoming-call answer path. The plugin keeps re-resolving the audio owner and
-checking both routes during the call, then hangs up if anything changes.
-
-Do not select an Aggregate, Multi-Output, BlackHole, `OpenClaw-Feed`, or `OpenClaw-Mic` device as the call output.
-
-For unattended inbound calls on a remotely managed Mac:
-
-- Keep Focus off, or configure the active Focus to allow the expected caller.
-- In System Settings > Notifications, set "when mirroring or sharing the
-  display" to "Allow Notifications." macOS otherwise rejects an incoming call
-  through its DND filter before the injected helper can observe or answer it.
-- If Phone diverts filtered calls before the helper can answer, turn off Live
-  Voicemail in Phone > Settings > Calls while diagnosing the route.
-
-The Core Audio process tap starts before auto-answer and uses per-process mute behavior. Caller audio is still captured for OpenClaw, but the call process sends nothing to speakers or headphones. This suppression follows the process across volume and default-output changes and does not change the Mac's global mute state.
-
-If provider startup, routing, helper control, or carrier hangup fails after answer, the plugin immediately stops model input and speech, safety-mutes both call directions, retains the process tap, and retries hangup instead of dropping local protection around a still-connected call.
-
-## Preflight and live test
-
-Start the OpenClaw gateway with the plugin enabled, then run:
+Review the source, then run:
 
 ```sh
-openclaw gateway call facetime.setup --json
-```
-
-The guided setup report checks the full Xcode installation, developer-tools
-access, SIP debugging restrictions, the paired audio driver, automatic helper
-injection into FaceTime and Phone, Focus, notification behavior while the
-display is shared, and all preflight checks below. It returns machine-readable
-actions for anything that still needs attention.
-
-Safe repairs happen automatically when the plugin runtime starts: native
-artifacts are built when missing, FaceTime and Phone are launched, and the
-authenticated helper is injected and supervised. Protected macOS changes are
-never applied silently:
-
-- Install or update the audio driver with `facetime.installDriver`. macOS may
-  request administrator approval and Core Audio restarts after installation.
-- Grant Screen & System Audio Recording in System Settings when requested.
-- Enable developer tools access with
-  `sudo /usr/sbin/DevToolsSecurity -enable` if setup reports it disabled.
-- Disable only SIP debugging restrictions from macOS Recovery after accepting
-  the security tradeoff. The plugin detects the state but never changes it.
-- Turn off Focus and allow notifications while mirroring or sharing the
-  display for unattended incoming calls.
-
-FaceTime sign-in and the final per-process audio route do not have supported
-macOS readiness APIs. The report marks those checks as `verify-on-call` until a
-live call proves caller audio, assistant audio, and Mac speaker suppression.
-
-For the lower-level audio preflight alone, run:
-
-```sh
-openclaw gateway call facetime.preflight --json
-```
-
-Required checks cover:
-
-- helper connection
-- SoX
-- signed capture helper
-- FaceTime or Phone process
-- `OpenClaw-Mic` and `OpenClaw-Feed`
-- physical system output
-- live Core Audio process tap and TCC permission
-- `OpenClaw-Feed` to `OpenClaw-Mic` signal
-- Realtime provider credentials
-
-The call-specific `OpenClaw-Mic` check happens when the actual FaceTime or Phone audio process becomes active.
-
-Start an allowlisted outbound audio call from the OpenClaw Mac:
-
-```sh
-openclaw gateway call facetime.dial \
-  --params '{"handle":"user@example.com","mode":"audio"}' \
-  --json
-```
-
-Use `"mode":"video"` for a FaceTime video call. The injected helper creates a
-native dial request with the macOS confirmation UI disabled, so this works when
-the call app's window is off-screen. The target must match `whitelistHandles`,
-and the plugin rejects a second dial while a call or outbound request is active.
-The result includes an immediate `dialID` and uses `state: "pending"` when macOS
-accepts the dial before assigning its call UUID. The helper stamps that ID into
-the native call for exact cancellation and helper-restart recovery, then
-correlates the UUID from the outgoing event.
-
-Alternatively, place a whitelisted call manually and inspect status:
-
-```sh
-openclaw gateway call facetime.status --json
-```
-
-An active call should report `audioReady: true`, `realtimeActive: true`, `processOutputSuppressed: true`, and the paired transport names.
-
-Send a deterministic test phrase through the same output-only path:
-
-```sh
-openclaw gateway call facetime.testAudio \
-  --params '{"phrase":"This is OpenClaw speaking through FaceTime."}' \
-  --json
-```
-
-Run the guided acceptance sequence with the user present:
-
-```sh
-scripts/live-acceptance.sh
-```
-
-Hang up through OpenClaw:
-
-```sh
-openclaw gateway call facetime.hangup --json
-```
-
-During a live realtime call, the authenticated caller can also say “hang up”
-or “end this call.” The realtime voice model receives a call-scoped control
-that ends the current carrier directly, without starting a separate agent turn
-or asking for confirmation.
-
-## Agent tool and skill
-
-The plugin bundles a `facetime` skill and registers the `facetime_call` tool so
-OpenClaw agents can inspect readiness and manage calls without shell commands.
-The available actions are:
-
-- `get_status`
-- `check_readiness`
-- `initiate_call`
-- `end_call`
-
-Outbound calls require an allowlisted handle and a trusted, one-shot OpenClaw
-plugin approval. Persistent approval is intentionally unavailable. Driver
-installation, SIP changes, FaceTime sign-in, TCC permissions, and System
-Settings remain operator-only.
-
-Agents using a restrictive tool profile must also allow the tool explicitly:
-
-```json5
-{
-  agents: {
-    list: [
-      {
-        id: "main",
-        tools: { alsoAllow: ["facetime_call"] },
-      },
-    ],
-  },
-}
-```
-
-## Development checks
-
-```sh
-pnpm typecheck
+corepack enable
+pnpm install --frozen-lockfile
 pnpm test
-pnpm build:capture
-pnpm build:helper:macabi
-pnpm build
 bash -n scripts/*.sh
 bash scripts/test-native.sh
-npm pack --dry-run
+make native-archive
+make native-verify
 ```
 
-Generated `dist/` and `native/.build/` outputs are ignored. Helper and driver
-artifacts are built into user cache or application-support directories. The npm
-package includes the TypeScript build, native capture source, helper source, and
-setup scripts, but excludes generated native binaries and GPL driver artifacts.
+`make native-archive` produces an ad-hoc-signed local archive at
+`bin/openclaw-facetime-macos-arm64.zip`. It is for development verification and
+must not be published. Foundation releases use Developer ID signing and Apple
+notarization through the release workflow.
 
-## Current limits
+Useful focused build commands:
 
-- This is a dedicated AI side of a private call. Selecting `OpenClaw-Mic` replaces the Mac's physical microphone for that call app.
-- One bridged call is supported at a time.
-- FaceTime video and Phone-owned FaceTime audio require separate live acceptance passes.
-- A live remote participant is required to prove that app-specific routing reaches the caller.
-- Realtime model fallback is not automatic.
+```sh
+pnpm build:capture
+pnpm build:helper:macabi
+pnpm inject:helper
+pnpm inject:helper:phone
+```
+
+The injection commands are development tools. They require the manual SIP and
+Developer Tools preparation documented in the recovery guide. They never
+change SIP, TCC, or developer-tools policy themselves.
+
+## Paired audio driver
+
+The native build scripts can create the paired `OpenClaw-Feed` and
+`OpenClaw-Mic` Core Audio driver from pinned BlackHole source:
+
+```sh
+pnpm build:driver
+pnpm install:driver
+```
+
+The generated driver is a separate modified GPL-3.0 artifact. It is ignored by
+Git and intentionally excluded from this repository's release archive and
+Homebrew formula.
+
+## Shared native contracts
+
+Two small files intentionally mirror contracts consumed by the canonical
+plugin:
+
+- `helper-endpoint.json` is a build input for the injected helper. Its hash is
+  part of `FaceTimeHelper.build-id`.
+- `native-protocol.env` is included in every release archive. The plugin checks
+  it before using installed helpers.
+
+These are native protocol fixtures, not alternate plugin configuration. Any
+change must be coordinated with the FaceTime plugin in `openclaw/openclaw` and
+validated on both sides.
+
+## Release
+
+See [docs/RELEASING.md](docs/RELEASING.md) for the artifact contract and
+workflow, and [FOUNDATION_RELEASE_HANDOFF.md](FOUNDATION_RELEASE_HANDOFF.md) for
+the remaining organization-owned prerequisites.
+
+The repository package is private and exists only to pin the local Vitest
+harness and native convenience commands. It is not an npm distribution and
+does not register an OpenClaw plugin.
 
 ## License
 
-The original plugin source is available under the [MIT License](LICENSE).
-Incorporated and adapted helper source retains its upstream Apache-2.0 and MIT
-terms in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-
-The locally generated `OpenClawBridge.driver` remains a separate modified build
-of GPL-3.0 BlackHole. See [Driver licensing boundary](#driver-licensing-boundary)
-before distributing any generated driver artifact.
+Repository-owned source is available under the [MIT License](LICENSE).
+Incorporated and adapted helper source retains the upstream terms recorded in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

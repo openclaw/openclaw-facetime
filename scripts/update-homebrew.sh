@@ -30,6 +30,7 @@ gh workflow run update-formula.yml \
   --repo "${tap_repository}" \
   --ref main \
   -f formula="${formula}" \
+  -f formula_profile=openclaw-facetime \
   -f tag="${tag}" \
   -f repository=openclaw/openclaw-facetime \
   -f macos_artifact=openclaw-facetime-macos-arm64.zip \

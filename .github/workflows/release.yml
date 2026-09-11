@@ -11,7 +11,7 @@ on:
 permissions: {}
 
 concurrency:
-  group: facetime-release-${{ inputs.version }}
+  group: facetime-release
   cancel-in-progress: false
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
     name: 1 · Validate frozen source
     runs-on: ubuntu-latest
     permissions:
-      checks: read
+      actions: read
       contents: read
     outputs:
       tag: ${{ steps.input.outputs.tag }}
@@ -72,7 +72,7 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ steps.source.outputs.target-sha }}
-      - name: Verify version and independent CI
+      - name: Verify version and exact CI
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           TAG: ${{ steps.input.outputs.tag }}
@@ -82,14 +82,73 @@ jobs:
             const fs = require('fs');
             const version = fs.readFileSync('version.env', 'utf8').match(/^VERSION=(.+)$/m)?.[1];
             if (`v${version}` !== process.env.TAG) throw new Error('version.env does not match release input');
-            const accepted = new Set(['success', 'neutral', 'skipped']);
-            const checks = await github.paginate(github.rest.checks.listForRef, {
-              ...context.repo, ref: process.env.TARGET_SHA, per_page: 100, filter: 'latest',
+            const repository = await github.rest.repos.get(context.repo);
+            const branchName = repository.data.default_branch;
+            const workflow = await github.rest.actions.getWorkflow({
+              ...context.repo, workflow_id: 'ci.yml',
             });
-            const independent = checks.filter((check) => !check.details_url?.includes(`/actions/runs/${context.runId}`));
-            if (independent.length === 0) throw new Error('release target has no independent CI evidence');
-            const failures = independent.filter((check) => check.status !== 'completed' || !accepted.has(check.conclusion));
-            if (failures.length) throw new Error(`non-green checks: ${failures.map((check) => check.name).join(', ')}`);
+            if (workflow.data.state !== 'active') throw new Error('CI workflow is not active');
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              ...context.repo,
+              workflow_id: workflow.data.id,
+              branch: branchName,
+              event: 'push',
+              head_sha: process.env.TARGET_SHA,
+              status: 'completed',
+              per_page: 100,
+            });
+            const green = runs.find((run) =>
+              run.head_sha === process.env.TARGET_SHA &&
+              run.head_branch === branchName &&
+              run.event === 'push' &&
+              run.status === 'completed' &&
+              run.conclusion === 'success'
+            );
+            if (!green) throw new Error(`no successful ${branchName} push run of ci.yml for ${process.env.TARGET_SHA}`);
+      - name: Validate release and Homebrew readiness
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_PRIVATE_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
+          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
+          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: |
+          set -euo pipefail
+          for name in MACOS_SIGNING_P12 MACOS_SIGNING_P12_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_P8 HOMEBREW_TAP_TOKEN; do
+            [[ -n "${!name:-}" ]] || { echo "missing release secret: $name" >&2; exit 1; }
+          done
+          [[ "$REPOSITORY_VISIBILITY" == "public" ]] || {
+            echo "openclaw/openclaw-facetime must be public before its GitHub release can back Homebrew" >&2
+            exit 1
+          }
+          [[ "$(gh api repos/openclaw/homebrew-tap --jq .default_branch)" == "main" ]] || {
+            echo "openclaw/homebrew-tap must use main as its default branch" >&2
+            exit 1
+          }
+          [[ "$(gh api repos/openclaw/homebrew-tap/actions/workflows/update-formula.yml --jq .state)" == "active" ]] || {
+            echo "openclaw/homebrew-tap update-formula.yml is not active" >&2
+            exit 1
+          }
+          tap_profile="$RUNNER_TEMP/openclaw-facetime.rb"
+          if ! gh api 'repos/openclaw/homebrew-tap/contents/.github/formula-profiles/openclaw-facetime.rb?ref=main' \
+            --jq .content | base64 --decode >"$tap_profile"; then
+            echo "The openclaw-facetime formula profile must be merged in openclaw/homebrew-tap before tagging" >&2
+            exit 1
+          fi
+          if ! cmp -s packaging/homebrew/openclaw-facetime.rb "$tap_profile"; then
+            echo "The tap's openclaw-facetime profile differs from the reviewed native formula contract" >&2
+            exit 1
+          fi
+          workflow_source="$RUNNER_TEMP/update-formula.yml"
+          gh api 'repos/openclaw/homebrew-tap/contents/.github/workflows/update-formula.yml?ref=main' \
+            --jq .content | base64 --decode >"$workflow_source"
+          if ! grep -Eq '^[[:space:]]+formula_profile:' "$workflow_source"; then
+            echo "The tap updater does not expose the required formula_profile input" >&2
+            exit 1
+          fi
 
   tag:
     name: 2 · Freeze annotated tag
@@ -131,6 +190,7 @@ jobs:
     name: 3 · Build, sign, and notarize
     needs: [validate, tag]
     runs-on: macos-15
+    timeout-minutes: 60
     permissions:
       contents: read
     outputs:
@@ -140,18 +200,6 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ needs.validate.outputs.tag }}
-      - name: Validate credentials
-        env:
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_PRIVATE_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
-          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
-          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
-        run: |
-          set -euo pipefail
-          for name in MACOS_SIGNING_P12 MACOS_SIGNING_P12_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_P8; do
-            [[ -n "${!name:-}" ]] || { echo "missing release secret: $name" >&2; exit 1; }
-          done
       - name: Import OpenClaw Foundation signer
         id: signer
         env:
@@ -162,17 +210,29 @@ jobs:
           team=FWJYW4S8P8
           authority="Developer ID Application: OpenClaw Foundation ($team)"
           keychain="$RUNNER_TEMP/facetime-release.keychain-db"
+          search_list="$RUNNER_TEMP/facetime-original-keychains.txt"
           password=$(openssl rand -hex 32)
           p12="$RUNNER_TEMP/facetime-release.p12"
+          echo "keychain=$keychain" >>"$GITHUB_OUTPUT"
+          echo "p12=$p12" >>"$GITHUB_OUTPUT"
+          echo "search-list=$search_list" >>"$GITHUB_OUTPUT"
+          security list-keychains -d user | \
+            sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' >"$search_list"
           printf '%s' "$P12_BASE64" | base64 --decode >"$p12"
           security create-keychain -p "$password" "$keychain"
           security unlock-keychain -p "$password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
           security import "$p12" -k "$keychain" -P "$P12_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$password" "$keychain"
+          original_keychains=()
+          while IFS= read -r existing_keychain; do
+            [[ -z "$existing_keychain" ]] || original_keychains+=("$existing_keychain")
+          done <"$search_list"
+          security list-keychains -d user -s "$keychain" "${original_keychains[@]}"
           identity=$(security find-identity -v -p codesigning "$keychain" | awk -v authority="$authority" 'index($0, "\"" authority "\"") && $2 ~ /^[0-9A-Fa-f]{40}$/ { print $2; exit }')
           [[ "$identity" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "required signing identity missing: $authority" >&2; exit 1; }
           echo "identity=$identity" >>"$GITHUB_OUTPUT"
-          echo "keychain=$keychain" >>"$GITHUB_OUTPUT"
+          : >"$p12"
           /usr/bin/trash "$p12"
       - name: Create signed release payload
         env:
@@ -194,16 +254,37 @@ jobs:
           retention-days: 30
       - id: output
         run: echo "artifact-name=native-release-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >>"$GITHUB_OUTPUT"
-      - name: Delete signing keychain
+      - name: Restore keychain search list and delete signing material
         if: always()
         env:
           KEYCHAIN: ${{ steps.signer.outputs.keychain }}
-        run: '[[ -z "${KEYCHAIN:-}" || ! -e "$KEYCHAIN" ]] || security delete-keychain "$KEYCHAIN"'
+          P12: ${{ steps.signer.outputs.p12 }}
+          SEARCH_LIST: ${{ steps.signer.outputs.search-list }}
+        run: |
+          set -euo pipefail
+          cleanup_status=0
+          if [[ -n "${P12:-}" && -e "$P12" ]]; then
+            : >"$P12"
+            /usr/bin/trash "$P12" || cleanup_status=$?
+          fi
+          if [[ -n "${SEARCH_LIST:-}" && -f "$SEARCH_LIST" ]]; then
+            original_keychains=()
+            while IFS= read -r existing_keychain; do
+              [[ -z "$existing_keychain" ]] || original_keychains+=("$existing_keychain")
+            done <"$SEARCH_LIST"
+            security list-keychains -d user -s "${original_keychains[@]}" || cleanup_status=$?
+            /usr/bin/trash "$SEARCH_LIST" || cleanup_status=$?
+          fi
+          if [[ -n "${KEYCHAIN:-}" && -e "$KEYCHAIN" ]]; then
+            security delete-keychain "$KEYCHAIN" || cleanup_status=$?
+          fi
+          exit "$cleanup_status"
 
   release:
     name: 4 · Draft, verify, publish, and hand off
     needs: [validate, sign]
     runs-on: macos-15
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: write
@@ -216,12 +297,30 @@ jobs:
         with:
           name: ${{ needs.sign.outputs.artifact-name }}
           path: release-assets
-      - name: Create draft
+      - name: Create or resume release
+        id: release-state
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
-        run: gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes release-assets/*
-      - name: Download and independently verify draft
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --json isDraft >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
+            if [[ "$is_draft" == "true" ]]; then
+              gh release upload "$TAG" release-assets/* --clobber
+              echo "publish-needed=true" >>"$GITHUB_OUTPUT"
+            elif [[ "$is_draft" == "false" ]]; then
+              echo "publish-needed=false" >>"$GITHUB_OUTPUT"
+            else
+              echo "Could not determine existing release state for $TAG" >&2
+              exit 1
+            fi
+          else
+            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
+            gh release upload "$TAG" release-assets/* --clobber
+            echo "publish-needed=true" >>"$GITHUB_OUTPUT"
+          fi
+      - name: Download and independently verify release assets
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
@@ -231,6 +330,7 @@ jobs:
           REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
             EXPECTED_TEAM_ID=FWJYW4S8P8 make native-verify
       - name: Publish verified draft
+        if: steps.release-state.outputs.publish-needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}

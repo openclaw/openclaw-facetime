@@ -1,36 +1,25 @@
 # Contributing
 
-OpenClaw FaceTime is an experimental macOS plugin that controls protected Apple
-apps, captures live call audio, and installs a local Core Audio driver. Treat
-changes to call admission, routing, helper authentication, or cleanup as
-security-sensitive.
+This repository owns the privileged native FaceTime components and their
+release pipeline. The TypeScript plugin and its product behavior live in
+`openclaw/openclaw`. Send plugin configuration, tool, skill, realtime-provider,
+and runtime-lifecycle changes there.
 
 ## Development setup
 
-You need:
-
-- an Apple Silicon Mac
-- full Xcode at `/Applications/Xcode.app` (set `DEVELOPER_DIR` for another Xcode installation)
-- a supported Node.js version from `package.json`
-- pnpm 11.24.0 through Corepack
-- SoX
-
-Install dependencies and build:
+You need an Apple Silicon Mac, full Xcode, a supported Node.js version from
+`package.json`, and pnpm 11.24.0 through Corepack.
 
 ```sh
 corepack enable
-brew install sox
 pnpm install --frozen-lockfile
-pnpm build
 ```
 
 ## Validation
 
-Run the checks that cover your change. Before opening a pull request, run the
-complete local suite:
+Run the checks that cover your change. Before opening a pull request, run:
 
 ```sh
-pnpm typecheck
 pnpm test
 bash -n scripts/*.sh
 bash scripts/test-native.sh
@@ -38,28 +27,27 @@ pnpm build:capture
 pnpm build:helper:macabi
 make native-archive
 make native-verify
-pnpm build
-npm pack --dry-run
 ```
 
 Release archives are signed and notarized separately. Follow
-`docs/RELEASING.md`; CI comparison artifacts are ad-hoc signed and must never
-be published as release assets.
+`docs/RELEASING.md`; local archives are ad-hoc signed and must never be
+published as release assets.
 
-Changes to the carrier, helper, audio route, or Realtime session also require
-the live acceptance procedure in `docs/phase1-verification.md`. A real remote
-participant must confirm caller audio, assistant audio, interruption behavior,
-and Mac speaker suppression.
+Changes that affect the end-to-end FaceTime product also need the live proof
+defined by the canonical
+[FaceTime plugin documentation](https://docs.openclaw.ai/plugins/facetime).
 
 ## Pull requests
 
-- Explain the user-visible failure or capability.
+- Explain the native failure, capability, or release invariant.
 - Include automated proof and any required live proof.
-- Document new setup, security, or compatibility requirements.
-- Never commit API keys, helper authentication keys, generated native binaries,
-  or generated `OpenClawBridge.driver` artifacts.
+- Document new security or compatibility requirements.
+- Coordinate changes to `helper-endpoint.json` or `native-protocol.env` with
+  the canonical plugin.
+- Never commit credentials, generated native binaries, or generated
+  `OpenClawBridge.driver` artifacts.
 
-Original plugin source is MIT licensed. Incorporated and adapted helper source
-retains the terms recorded in `THIRD_PARTY_NOTICES.md`. The locally generated
-audio driver is a separate modified build of GPL-3.0 BlackHole and must remain
-outside this repository and the npm package.
+Repository-owned source is MIT licensed. Incorporated and adapted helper source
+retains the terms in `THIRD_PARTY_NOTICES.md`. The locally generated audio
+driver is a separate modified GPL-3.0 artifact and stays outside release
+archives.

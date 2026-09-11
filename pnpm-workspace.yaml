@@ -1,11 +1,3 @@
 minimumReleaseAge: 2880
-allowBuilds:
-  "@google/genai": true
-  "@openclaw/fs-safe": true
-  koffi: true
-  openclaw: true
-  protobufjs: true
-  tree-sitter-bash: true
 overrides:
-  tar: 7.5.22
   vite: 8.2.2

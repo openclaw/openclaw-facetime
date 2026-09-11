@@ -103,4 +103,66 @@ describe("privileged FaceTime support boundaries", () => {
     );
     expect(updateHomebrew).not.toContain("steipete/homebrew-tap");
   });
+
+  it("gates every release side effect on exact CI and distribution readiness", () => {
+    const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+    const tagJob = releaseWorkflow.indexOf("\n  tag:");
+    const readinessGate = releaseWorkflow.indexOf("Validate release and Homebrew readiness");
+
+    expect(readinessGate).toBeGreaterThan(0);
+    expect(readinessGate).toBeLessThan(tagJob);
+    expect(releaseWorkflow).toContain("workflow_id: 'ci.yml'");
+    expect(releaseWorkflow).toContain("run.conclusion === 'success'");
+    expect(releaseWorkflow).toContain("REPOSITORY_VISIBILITY");
+    expect(releaseWorkflow).toContain("MACOS_SIGNING_P12_PASSWORD");
+    expect(releaseWorkflow).toContain("ASC_PRIVATE_KEY_P8");
+    expect(releaseWorkflow).toContain("HOMEBREW_TAP_TOKEN");
+    expect(releaseWorkflow).toContain(".github/formula-profiles/openclaw-facetime.rb");
+    expect(releaseWorkflow).toContain(
+      'cmp -s packaging/homebrew/openclaw-facetime.rb "$tap_profile"',
+    );
+    expect(releaseWorkflow).toContain("formula_profile");
+    expect(releaseWorkflow).not.toContain(".permissions.push");
+  });
+
+  it("restores the signing search list and resumes existing releases", () => {
+    const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+
+    expect(releaseWorkflow).toContain('security list-keychains -d user -s "$keychain"');
+    expect(releaseWorkflow).toContain('security list-keychains -d user -s "${original_keychains[@]}"');
+    expect(releaseWorkflow).toContain('gh release view "$TAG"');
+    expect(releaseWorkflow).toContain('gh release upload "$TAG" release-assets/* --clobber');
+    expect(releaseWorkflow).toContain("publish-needed");
+    expect(releaseWorkflow).toContain("if: steps.release-state.outputs.publish-needed == 'true'");
+  });
+
+  it("keeps the reviewed Homebrew profile contract in the native repository", () => {
+    const formula = readFileSync("packaging/homebrew/openclaw-facetime.rb", "utf8");
+
+    expect(formula).toContain('sha256 "RELEASE_SHA256"');
+    expect(formula).toContain('depends_on "sox"');
+    expect(formula).toContain(
+      'skip_clean "libexec/facetime-audio-capture", "libexec/FaceTimeHelper.dylib"',
+    );
+    for (const file of [
+      "facetime-audio-capture",
+      "FaceTimeHelper.dylib",
+      "FaceTimeHelper.build-id",
+      "VERSION",
+      "native-protocol.env",
+      "LICENSE",
+      "THIRD_PARTY_NOTICES.md",
+    ]) {
+      expect(formula).toContain(`libexec.install "${file}"`);
+    }
+  });
+
+  it("keeps the tap token dispatch-only", () => {
+    const updateHomebrew = readFileSync("scripts/update-homebrew.sh", "utf8");
+
+    expect(updateHomebrew).toContain("gh workflow run update-formula.yml");
+    expect(updateHomebrew).toContain("-f formula_profile=openclaw-facetime");
+    expect(updateHomebrew).not.toContain("gh repo clone");
+    expect(updateHomebrew).not.toContain("git push");
+  });
 });
