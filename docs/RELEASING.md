@@ -49,10 +49,9 @@ arguments.
 
 Update `VERSION` in `version.env`, merge with green CI, then dispatch **Release**
 from the current `main` branch with that version. Before creating a tag, the
-workflow verifies that the repository is public, all signing and tap secrets are
-present, the tap exposes its allowlisted `openclaw-facetime` formula profile,
-and the exact target commit has a successful `ci.yml` push run on the default
-branch. It then:
+workflow verifies that the repository is public, all six signing/notarization/
+tap secrets are present, and the exact target commit has a successful `ci.yml`
+push run on the default branch. It then:
 
 1. Validates SemVer, current `main`, exact green CI, and distribution readiness.
 2. Creates or verifies an immutable annotated tag.
@@ -63,8 +62,11 @@ branch. It then:
    checksums, Foundation Team ID, helper identity, protocol version, and online
    Apple notarization tickets.
 6. Publishes the verified draft. A rerun resumes an existing draft or verifies
-   an existing published release before retrying the tap handoff.
-7. Dispatches the formula updater in `openclaw/homebrew-tap`.
+   the same existing published release without replacing its assets.
+7. Verifies that the tap's allowlisted FaceTime profile is present on `main`,
+   byte-identical to the native formula contract, and exposed by the active tap
+   updater workflow.
+8. Dispatches the formula updater in `openclaw/homebrew-tap`.
 
 The required organization secrets, public-download decision, branch settings,
 and first-formula procedure are in `FOUNDATION_RELEASE_HANDOFF.md`.
@@ -73,11 +75,20 @@ and first-formula procedure are in `FOUNDATION_RELEASE_HANDOFF.md`.
 
 The release workflow never asks the tap's generic missing-formula path to create
 this formula. That path targets ordinary four-platform command-line archives and
-cannot preserve FaceTime's seven-file `libexec` contract. Before the first native
-release, merge the tap-owned `formula_profile=openclaw-facetime` implementation
-in `openclaw/homebrew-tap`. The native workflow fails before tagging until that
-allowlisted capability is present on the tap's `main` branch and its profile is
-byte-identical to `packaging/homebrew/openclaw-facetime.rb`.
+cannot preserve FaceTime's seven-file `libexec` contract. The tap-owned
+`formula_profile=openclaw-facetime` implementation must be merged in
+`openclaw/homebrew-tap` before Homebrew dispatch. The native workflow checks the
+allowlisted capability and byte-identical profile only after it has published
+and verified the native release.
+
+For the first release, run the native workflow before merging the tap profile.
+The run publishes the signed and notarized GitHub release, then is expected to
+fail at **Validate Homebrew handoff readiness**. Use that real public archive to
+prove and merge the tap profile. Rerun the native workflow with the same version;
+it reuses the immutable annotated tag and published release, verifies the
+existing public assets, and completes the tap dispatch. Do not delete or
+recreate the tag or release between runs. Later releases normally complete in a
+single run because the profile is already present.
 
 `packaging/homebrew/openclaw-facetime.rb` records the reviewed native archive
 contract. Releases use `scripts/update-homebrew.sh` to dispatch the tap-owned
