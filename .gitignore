@@ -1,8 +1,17 @@
 node_modules/
 dist/
+coverage/
 .DS_Store
 WORKLOG.md
 helper-ipc-key
+
+# Local configuration and signing credentials must never enter source control.
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.p8
 
 helper/*.xcworkspace/xcuserdata/
 helper/FaceTimeHelper.xcodeproj/xcuserdata/

@@ -47,7 +47,8 @@ arguments.
 
 ## Foundation release
 
-Update `VERSION` in `version.env`, merge with green CI, then dispatch **Release**
+Update `VERSION` in `version.env` and move the relevant `CHANGELOG.md` entries
+into that version's dated section. Merge with green CI, then dispatch **Release**
 from the current `main` branch with that version. Before creating a tag, the
 workflow verifies that the repository is public, all six signing/notarization/
 tap secrets are present, and the exact target commit has a successful `ci.yml`

@@ -4,11 +4,27 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  workflows:
+    name: Workflow lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Lint workflows
+        uses: docker://rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+
   native:
     runs-on: macos-15
     timeout-minutes: 30
@@ -23,10 +39,13 @@ jobs:
         with:
           node-version: 26
           cache: pnpm
-      - run: pnpm store prune
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
-      - run: bash -n scripts/*.sh
+      - name: Check every shell script
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
       - run: bash scripts/test-native.sh
       - run: pnpm build:capture
       - run: make native-archive

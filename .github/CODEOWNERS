@@ -1,0 +1,22 @@
+# Native components and their public contracts.
+* @openclaw/maintainer
+
+# Privileged components, distribution, and repository governance.
+/.github/ @openclaw/openclaw-secops
+/AGENTS.md @openclaw/openclaw-secops
+/CLAUDE.md @openclaw/openclaw-secops
+/CONTRIBUTING.md @openclaw/openclaw-secops
+/SECURITY.md @openclaw/openclaw-secops
+/LICENSE @openclaw/openclaw-secops
+/THIRD_PARTY_NOTICES.md @openclaw/openclaw-secops
+/FOUNDATION_RELEASE_HANDOFF.md @openclaw/openclaw-secops
+/docs/RELEASING.md @openclaw/openclaw-secops
+/helper/ @openclaw/openclaw-secops
+/scripts/ @openclaw/openclaw-secops
+/packaging/ @openclaw/openclaw-secops
+/helper-endpoint.json @openclaw/openclaw-secops
+/native-protocol.env @openclaw/openclaw-secops
+/version.env @openclaw/openclaw-secops
+/package.json @openclaw/openclaw-secops
+/pnpm-lock.yaml @openclaw/openclaw-secops
+/pnpm-workspace.yaml @openclaw/openclaw-secops

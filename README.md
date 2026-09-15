@@ -1,5 +1,9 @@
 # OpenClaw FaceTime native components
 
+[![CI](https://github.com/openclaw/openclaw-facetime/actions/workflows/ci.yml/badge.svg)](https://github.com/openclaw/openclaw-facetime/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/openclaw/openclaw-facetime/actions/workflows/codeql.yml/badge.svg)](https://github.com/openclaw/openclaw-facetime/actions/workflows/codeql.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 This repository owns the native binaries, build scripts, signing, notarization,
 and Homebrew release contract used by the FaceTime plugin in
 [`openclaw/openclaw`](https://github.com/openclaw/openclaw).
@@ -37,7 +41,10 @@ using it.
 - full Xcode, normally at `/Applications/Xcode.app`
 - Node.js and pnpm 11.24.0 only for this repository's small test harness
 
-Production installation uses the signed and notarized Homebrew artifact:
+The first signed release and Homebrew formula are still being prepared. Check
+[GitHub Releases](https://github.com/openclaw/openclaw-facetime/releases) and the
+[release handoff](FOUNDATION_RELEASE_HANDOFF.md) for availability. After that
+handoff completes, production installation uses the signed and notarized artifact:
 
 ```sh
 brew install openclaw/tap/openclaw-facetime
@@ -55,7 +62,7 @@ Review the source, then run:
 corepack enable
 pnpm install --frozen-lockfile
 pnpm test
-bash -n scripts/*.sh
+for script in scripts/*.sh; do bash -n "$script"; done
 bash scripts/test-native.sh
 make native-archive
 make native-verify
@@ -116,6 +123,17 @@ the remaining organization-owned prerequisites.
 The repository package is private and exists only to pin the local Vitest
 harness and native convenience commands. It is not an npm distribution and
 does not register an OpenClaw plugin.
+
+## Contributing and security
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and the native
+ownership boundary, and [CHANGELOG.md](CHANGELOG.md) for changes. Report native
+defects through the [issue templates](https://github.com/openclaw/openclaw-facetime/issues/new/choose).
+Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
+
+CI validates workflows, tests the harness and native checks, and builds and
+verifies the native archive. CodeQL scans Swift, TypeScript, Ruby, and Actions;
+it does not analyze the Objective-C helper.
 
 ## License
 

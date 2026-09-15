@@ -3,18 +3,18 @@
   "version": "0.0.0",
   "private": true,
   "description": "Private build, security, and release harness for OpenClaw FaceTime native components",
-  "license": "MIT",
-  "author": "OpenClaw contributors",
+  "keywords": [
+    "facetime",
+    "macos",
+    "native-helper",
+    "openclaw"
+  ],
   "homepage": "https://github.com/openclaw/openclaw-facetime#readme",
   "bugs": {
     "url": "https://github.com/openclaw/openclaw-facetime/issues"
   },
-  "keywords": [
-    "facetime",
-    "openclaw",
-    "native-helper",
-    "macos"
-  ],
+  "license": "MIT",
+  "author": "OpenClaw contributors",
   "repository": {
     "type": "git",
     "url": "https://github.com/openclaw/openclaw-facetime"
@@ -37,13 +37,13 @@
     "inject:helper": "bash scripts/inject-helper.sh",
     "inject:helper:phone": "bash scripts/inject-helper.sh --app Phone",
     "inject:helper:terminal": "bash scripts/inject-helper-terminal.sh",
-    "test": "vitest run tests --passWithNoTests"
+    "test": "vitest run tests"
   },
   "devDependencies": {
     "vitest": "^4.1.11"
   },
-  "packageManager": "pnpm@11.24.0",
   "engines": {
     "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=25.9.0"
-  }
+  },
+  "packageManager": "pnpm@11.24.0"
 }

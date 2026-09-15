@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a native FaceTime component, build, or release defect.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Report plugin configuration and tool behavior in openclaw/openclaw.
+        Use the private security report link for vulnerabilities. Redact Apple IDs,
+        phone numbers, call identifiers, credentials, and private paths.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Include the expected behavior and actual outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Give the smallest reproduction and relevant commands.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Native version or commit
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: macOS version, Apple Silicon model, Xcode version, and OpenClaw version.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Include relevant errors or logs without personal call data or credentials.

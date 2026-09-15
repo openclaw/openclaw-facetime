@@ -19,14 +19,12 @@ release rather than creating a second release or replacing published assets.
 
 ## Foundation actions required
 
-### 1. Choose a public download location
+### 1. Verify the public download location
 
-`openclaw/openclaw-facetime` is currently private. Homebrew cannot anonymously download GitHub release assets from a private repository.
-
-Before the first release, choose one option:
-
-1. Recommended: audit the repository and its history for secrets and licensing, then make `openclaw/openclaw-facetime` public.
-2. Keep the source repository private, publish the signed assets from a separate public OpenClaw release repository, and update both the release workflow and formula URL.
+`openclaw/openclaw-facetime` is public. Keep the repository and its native release
+assets publicly readable so Homebrew can download them without credentials.
+Public source availability does not mean that the first signed release or
+formula has been published.
 
 Do not publish a Homebrew formula until its release asset URL is anonymously downloadable.
 
@@ -34,14 +32,14 @@ Do not publish a Homebrew formula until its release asset URL is anonymously dow
 
 Grant these OpenClaw organization secrets to `openclaw/openclaw-facetime`:
 
-| Secret | Required value |
-| --- | --- |
-| `MACOS_SIGNING_P12` | Base64 PKCS#12 export containing the OpenClaw Foundation Developer ID Application certificate and private key |
-| `MACOS_SIGNING_P12_PASSWORD` | PKCS#12 export password |
-| `ASC_KEY_ID` | App Store Connect API key ID |
-| `ASC_ISSUER_ID` | App Store Connect API issuer ID |
-| `ASC_PRIVATE_KEY_P8` | Complete App Store Connect `.p8` private key contents |
-| `HOMEBREW_TAP_TOKEN` | Fine-grained token or GitHub App token able to dispatch workflows in `openclaw/homebrew-tap` |
+| Secret                       | Required value                                                                                                |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `MACOS_SIGNING_P12`          | Base64 PKCS#12 export containing the OpenClaw Foundation Developer ID Application certificate and private key |
+| `MACOS_SIGNING_P12_PASSWORD` | PKCS#12 export password                                                                                       |
+| `ASC_KEY_ID`                 | App Store Connect API key ID                                                                                  |
+| `ASC_ISSUER_ID`              | App Store Connect API issuer ID                                                                               |
+| `ASC_PRIVATE_KEY_P8`         | Complete App Store Connect `.p8` private key contents                                                         |
+| `HOMEBREW_TAP_TOKEN`         | Fine-grained token or GitHub App token able to dispatch workflows in `openclaw/homebrew-tap`                  |
 
 The Apple API key must be authorized to notarize software for Team ID
 `FWJYW4S8P8`. The tap token only needs Actions write access to
@@ -58,8 +56,10 @@ gh secret list --repo openclaw/openclaw-facetime
 
 In `openclaw/openclaw-facetime`:
 
-1. Protect `main` and require the normal `CI` workflow.
-2. Keep GitHub Actions enabled with the workflow-declared permissions.
+1. Protect `main` with required pull-request review and the `native` and
+   `Workflow lint` checks from the normal `CI` workflow.
+2. Keep GitHub Actions enabled with read-only defaults and the explicitly
+   declared job permissions. Actions does not need to approve pull requests.
 3. Confirm the release workflow can create annotated tags and GitHub releases.
 
 In `openclaw/homebrew-tap`:
@@ -94,7 +94,7 @@ do not delete or recreate the tag or release.
 Use this exact first-release sequence:
 
 1. Merge the native release and protocol changes with green CI.
-2. Make the native repository public, add all six secrets, and enable the
+2. Confirm the native repository is public, add all six secrets, and enable the
    protected release path described above.
 3. Run `.github/workflows/release.yml` from current `main` with version `0.1.0`.
 4. Confirm that `v0.1.0` and its verified assets are public and anonymously
