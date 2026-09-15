@@ -187,9 +187,11 @@ jobs:
           search_list="$RUNNER_TEMP/facetime-original-keychains.txt"
           password=$(openssl rand -hex 32)
           p12="$RUNNER_TEMP/facetime-release.p12"
-          echo "keychain=$keychain" >>"$GITHUB_OUTPUT"
-          echo "p12=$p12" >>"$GITHUB_OUTPUT"
-          echo "search-list=$search_list" >>"$GITHUB_OUTPUT"
+          {
+            echo "keychain=$keychain"
+            echo "p12=$p12"
+            echo "search-list=$search_list"
+          } >>"$GITHUB_OUTPUT"
           security list-keychains -d user | \
             sed -E 's/^[[:space:]]*"//; s/"[[:space:]]*$//' >"$search_list"
           printf '%s' "$P12_BASE64" | base64 --decode >"$p12"
