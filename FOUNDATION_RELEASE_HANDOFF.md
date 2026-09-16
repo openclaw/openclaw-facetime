@@ -91,21 +91,25 @@ expected to end failed at **Validate Homebrew handoff readiness**, after the
 verified release is already public. That failure is the safe bootstrap pause;
 do not delete or recreate the tag or release.
 
-Use this exact first-release sequence:
+The `v0.1.0` archive was published through this pause, but installation proof
+found that Homebrew rewrites the helper dylib's install name and replaces its
+Developer ID signature. Do not dispatch `v0.1.0` to the tap. The corrected
+formula preserves the signed helper through Homebrew's relocation pass and the
+first Homebrew-distributed release is `v0.1.1`.
+
+Use this exact recovery sequence:
 
 1. Merge the native release and protocol changes with green CI.
 2. Confirm the native repository is public, add all six secrets, and enable the
    protected release path described above.
-3. Run `.github/workflows/release.yml` from current `main` with version `0.1.0`.
-4. Confirm that `v0.1.0` and its verified assets are public and anonymously
-   downloadable. Confirm the run stopped only at the Homebrew readiness step.
-5. Reopen or recreate the coordinated `openclaw/homebrew-tap` profile change.
-   Prove it against the public archive, then merge it after tap review and CI.
-   The profile must be allowlisted by name and own the seven-file template,
-   validation, and commit.
-6. Rerun the native **Release** workflow with the same version, `0.1.0`. The
-   workflow verifies and reuses the existing annotated tag and published
-   release, verifies the tap profile, and dispatches the tap updater.
+3. Merge the corrected, byte-identical Homebrew profile in both repositories.
+4. Confirm `version.env` is `0.1.1` and that exact `main` has a green CI push.
+5. Run `.github/workflows/release.yml` from current `main` with version `0.1.1`.
+   The workflow publishes a new immutable archive, verifies the merged tap
+   profile, and dispatches the updater. Do not alter or recreate `v0.1.0`.
+6. If the cross-repository token remains pending, manually dispatch the tap's
+   `update-formula.yml` workflow with the exact `v0.1.1` tag and
+   `formula_profile=openclaw-facetime` after the native release succeeds.
 7. Confirm the formula was seeded with the public release URL and SHA-256, then
    install and verify it on an Apple Silicon Mac.
 

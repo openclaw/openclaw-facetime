@@ -178,9 +178,19 @@ describe("privileged FaceTime support boundaries", () => {
     expect(formula).toContain(
       'skip_clean "libexec/facetime-audio-capture", "libexec/FaceTimeHelper.dylib"',
     );
+    expect(formula).toContain('Zlib::GzipWriter.open("FaceTimeHelper.dylib.gz")');
+    expect(formula).toContain(
+      'install_gzipped_executable "libexec/FaceTimeHelper.dylib.gz",',
+    );
+    expect(formula).toContain(
+      '"Authority=Developer ID Application: OpenClaw Foundation (FWJYW4S8P8)"',
+    );
+    expect(formula).toContain('"TeamIdentifier=FWJYW4S8P8"');
+    expect(formula).not.toContain("--check-notarization");
     for (const file of [
       "facetime-audio-capture",
       "FaceTimeHelper.dylib",
+      "FaceTimeHelper.dylib.gz",
       "FaceTimeHelper.build-id",
       "VERSION",
       "native-protocol.env",
