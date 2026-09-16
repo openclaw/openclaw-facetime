@@ -22,3 +22,11 @@ here. Published versions are listed in
   canonical OpenClaw plugin's runtime requirements are unchanged.
 - Clarify first-release availability and the native/plugin ownership boundary.
 - Keep the standard MIT license text separate from third-party notices.
+
+## 0.1.1 - 2026-09-16
+
+### Fixed
+
+- Preserve the notarized `FaceTimeHelper.dylib` bytes and OpenClaw Foundation
+  Developer ID signature when Homebrew relocates installed Mach-O files.
+  `v0.1.0` remains immutable and must not be dispatched to the tap.

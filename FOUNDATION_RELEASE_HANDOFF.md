@@ -107,9 +107,12 @@ Use this exact recovery sequence:
 5. Run `.github/workflows/release.yml` from current `main` with version `0.1.1`.
    The workflow publishes a new immutable archive, verifies the merged tap
    profile, and dispatches the updater. Do not alter or recreate `v0.1.0`.
-6. If the cross-repository token remains pending, manually dispatch the tap's
-   `update-formula.yml` workflow with the exact `v0.1.1` tag and
-   `formula_profile=openclaw-facetime` after the native release succeeds.
+6. Keep the `HOMEBREW_TAP_TOKEN` secret populated before starting the release.
+   If that stored PAT still awaits organization approval, validation can
+   publish the independently verified release but the final cross-repository
+   dispatch will fail authorization. Only after confirming `v0.1.1` is public
+   and verified, manually dispatch the tap's `update-formula.yml` workflow with
+   the exact `v0.1.1` tag and `formula_profile=openclaw-facetime`.
 7. Confirm the formula was seeded with the public release URL and SHA-256, then
    install and verify it on an Apple Silicon Mac.
 
