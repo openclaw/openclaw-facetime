@@ -8,6 +8,9 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Keep FaceTime capture alive during bounded audio backpressure by replacing
+  stale pending frames instead of treating ordinary queue saturation as a
+  fatal conversion failure.
 - Bind release signing and verification to the validated commit, and recheck
   the frozen annotated tag before release writes, publication, and handoff.
   Same-named branches and moved tags cannot substitute release source.
