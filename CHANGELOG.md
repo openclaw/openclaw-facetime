@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Ignore SIGPIPE on capture stdout and treat a broken pipe like parent
+  death so FaceTime or Phone still receives the intended terminate.
 - Dispatch the Homebrew updater with the tap-owned FaceTime profile alone,
   without the conflicting artifact override that prevented formula updates.
 - Bind release signing and verification to the validated commit, and recheck
