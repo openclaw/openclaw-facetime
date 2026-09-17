@@ -4,6 +4,35 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+describe("FaceTime helper set-muted flag parsing", () => {
+  it("rejects JSON null and non-bool muted values", () => {
+    const outputDir = mkdtempSync(path.join(tmpdir(), "facetime-muted-flag."));
+    const binary = path.join(outputDir, "muted-flag-tests");
+    try {
+      execFileSync("/usr/bin/clang", [
+        "-fobjc-arc",
+        "-framework",
+        "Foundation",
+        "helper/FaceTimeHelper/MutedFlag.m",
+        "helper/tests/MutedFlagTests.m",
+        "-o",
+        binary,
+      ]);
+      expect(() => execFileSync(binary)).not.toThrow();
+    } finally {
+      if (existsSync("/usr/bin/trash")) {
+        execFileSync("/usr/bin/trash", [outputDir]);
+      } else {
+        execFileSync("/usr/bin/python3", [
+          "-c",
+          "import shutil, sys; shutil.rmtree(sys.argv[1])",
+          outputDir,
+        ]);
+      }
+    }
+  });
+});
+
 describe("FaceTime helper connection authentication", () => {
   it(
     "rejects same-session replay and envelopes captured before reconnect",
