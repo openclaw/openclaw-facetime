@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 describe("FaceTime helper set-muted flag parsing", () => {
-  it("rejects JSON null and non-bool muted values", () => {
+  it("rejects JSON numbers, null, and non-bool muted values on the set-muted command path", () => {
     const outputDir = mkdtempSync(path.join(tmpdir(), "facetime-muted-flag."));
     const binary = path.join(outputDir, "muted-flag-tests");
     try {

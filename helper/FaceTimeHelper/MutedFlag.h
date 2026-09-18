@@ -1,5 +1,6 @@
 #import <Foundation/Foundation.h>
 
-// Parses the authenticated set-muted "muted" field. JSON true/false become
-// NSNumber. JSON null is NSNull and must not receive -boolValue.
+// Parses the authenticated set-muted "muted" field. Accepts only JSON
+// true/false (CFBoolean). Numbers, strings, null, and a missing field
+// must be rejected so they cannot unmute or crash FaceTime.
 BOOL OpenClawFaceTimeParseMutedFlag(id value, BOOL *outMuted);
