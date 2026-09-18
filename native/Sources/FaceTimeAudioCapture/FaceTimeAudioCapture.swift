@@ -599,9 +599,8 @@ private final class PCMWriter: @unchecked Sendable {
 private final class CaptureLifecycle: @unchecked Sendable {
   private let lock = NSLock()
   private let failureQueue = DispatchQueue(label: "ai.openclaw.facetime-capture-failure")
+  private let parentLoss = ParentLossCoordinator()
   private var failure: Error?
-  private var stopping = false
-  private var parentLostHandler: (@Sendable () -> Void)?
   private lazy var captureOverflowSignal: DispatchSourceUserDataAdd = {
     let source = DispatchSource.makeUserDataAddSource(queue: self.failureQueue)
     source.setEventHandler { [weak self] in
@@ -628,30 +627,30 @@ private final class CaptureLifecycle: @unchecked Sendable {
   }
 
   func requestStop() {
-    self.lock.lock()
-    self.stopping = true
-    self.lock.unlock()
+    self.parentLoss.requestStop()
   }
 
   func setParentLostHandler(_ handler: @escaping @Sendable () -> Void) {
-    self.lock.lock()
-    self.parentLostHandler = handler
-    self.lock.unlock()
+    self.parentLoss.setHandler(handler)
+  }
+
+  func markCloseSafe() {
+    self.parentLoss.markCloseSafe()
   }
 
   func notifyParentLost() {
-    self.lock.lock()
-    let handler = self.parentLostHandler
-    self.parentLostHandler = nil
-    self.stopping = true
-    self.lock.unlock()
-    handler?()
+    self.parentLoss.notifyParentLost()
+  }
+
+  func handleUnexpectedParentEOF() {
+    self.parentLoss.handleUnexpectedParentEOF()
   }
 
   func state() -> (failure: Error?, stopping: Bool) {
     self.lock.lock()
-    defer { self.lock.unlock() }
-    return (self.failure, self.stopping)
+    let failure = self.failure
+    self.lock.unlock()
+    return (failure, self.parentLoss.isStopping())
   }
 }
 
@@ -842,10 +841,15 @@ private final class NativePlayback: @unchecked Sendable {
 private final class ParentCommandReader: @unchecked Sendable {
   private let playback: NativePlayback?
   private let unexpectedEOF: () -> Void
-  private var closeSafe = false
+  private let markCloseSafe: () -> Void
 
-  init(playback: NativePlayback? = nil, unexpectedEOF: @escaping () -> Void) {
+  init(
+    playback: NativePlayback? = nil,
+    markCloseSafe: @escaping () -> Void = {},
+    unexpectedEOF: @escaping () -> Void
+  ) {
     self.playback = playback
+    self.markCloseSafe = markCloseSafe
     self.unexpectedEOF = unexpectedEOF
   }
 
@@ -855,9 +859,7 @@ private final class ParentCommandReader: @unchecked Sendable {
       while true {
         let chunk = FileHandle.standardInput.availableData
         if chunk.isEmpty {
-          if !self.closeSafe {
-            self.unexpectedEOF()
-          }
+          self.unexpectedEOF()
           return
         }
         buffered.append(chunk)
@@ -881,7 +883,7 @@ private final class ParentCommandReader: @unchecked Sendable {
             } else if type == 3 {
               self.playback?.clear(generation: generation)
             } else if type == 4 {
-              self.closeSafe = true
+              self.markCloseSafe()
             }
           }
         }
@@ -1199,9 +1201,10 @@ private struct FaceTimeAudioCapture {
       // The OpenClaw host owns playback in a separate SoX process. Constructing
       // another AVAudioEngine here can rebind OpenClaw-Feed after FaceTime has
       // claimed the paired route and tear down the carrier.
-      let parentCommands = ParentCommandReader {
-        ownerRef.terminateIfCurrent(requestedNames: requestedNames)
-        lifecycle.requestStop()
+      let parentCommands = ParentCommandReader(
+        markCloseSafe: { lifecycle.markCloseSafe() }
+      ) {
+        lifecycle.handleUnexpectedParentEOF()
       }
       parentCommands.start()
       while true {

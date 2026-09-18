@@ -36,3 +36,10 @@ swiftc \
   -o "$build_dir/capture-standard-output-checks"
 
 "$build_dir/capture-standard-output-checks"
+
+swiftc \
+  "$repo_root/native/Sources/FaceTimeAudioCapture/ParentLossCoordinator.swift" \
+  "$repo_root/native/Checks/ParentLossCoordinatorChecks.swift" \
+  -o "$build_dir/parent-loss-coordinator-checks"
+
+"$build_dir/parent-loss-coordinator-checks"
