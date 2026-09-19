@@ -9,6 +9,7 @@
 
 #import "NetworkController.h"
 #import "ConnectionAuthentication.h"
+#import "FindOutgoingCall.h"
 #import "Logging.h"
 #import "TUConversationManager.h"
 #import "TUConversationManagerXPCClient.h"
@@ -925,9 +926,19 @@ FACETIMEHELPER *plugin;
             : @"";
         BOOL retainedDial = dialID.length > 0 && OutboundCallsByDialID[dialID] != nil;
         TUCall *matchedCall = LiveOutboundCall(dialID, expectedCallUUID, expectedProxyIdentifier);
-        if (matchedCall != nil && !ApplyOutboundSafetyMute(matchedCall)) {
-            [[TUCallCenter sharedInstance] disconnectCall:matchedCall];
-            matchedCall = nil;
+        BOOL verifiedFaceTime = matchedCall != nil && IsVerifiedFaceTimeCall(matchedCall);
+        BOOL safetyMuteRetained = verifiedFaceTime && ApplyOutboundSafetyMute(matchedCall);
+        switch (OpenClawFaceTimeFindOutgoingActionForMatch(
+            matchedCall != nil, verifiedFaceTime, safetyMuteRetained)) {
+            case OpenClawFaceTimeFindOutgoingDisconnect:
+                [[TUCallCenter sharedInstance] disconnectCall:matchedCall];
+                matchedCall = nil;
+                break;
+            case OpenClawFaceTimeFindOutgoingAbsent:
+                matchedCall = nil;
+                break;
+            case OpenClawFaceTimeFindOutgoingKeep:
+                break;
         }
         if (transaction != nil) {
             [controller sendMessage: @{

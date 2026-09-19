@@ -8,6 +8,9 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Keep `find-outgoing-call` from hanging up a cellular or other
+  non-FaceTime call when outbound safety mute cannot apply. The lookup
+  now returns absent instead of disconnecting.
 - Dispatch the Homebrew updater with the tap-owned FaceTime profile alone,
   without the conflicting artifact override that prevented formula updates.
 - Bind release signing and verification to the validated commit, and recheck
