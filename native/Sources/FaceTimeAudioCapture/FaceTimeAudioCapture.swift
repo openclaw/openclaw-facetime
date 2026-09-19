@@ -22,6 +22,7 @@ private enum CaptureError: LocalizedError {
   case invalidAudioFormat
   case usageDescriptionMissing
   case conversionFailed(String)
+  case standardOutputClosed
 
   var errorDescription: String? {
     switch self {
@@ -51,6 +52,8 @@ private enum CaptureError: LocalizedError {
         "The capture helper is missing its embedded NSAudioCaptureUsageDescription. Restart OpenClaw to rebuild the FaceTime plugin artifact."
     case .conversionFailed(let message):
       return "Audio conversion failed: \(message)"
+    case .standardOutputClosed:
+      return "Capture stdout closed; treating the parent as gone."
     }
   }
 }
@@ -586,15 +589,18 @@ private final class PCMWriter: @unchecked Sendable {
       return
     }
     let byteCount = Int(outputBuffer.frameLength) * MemoryLayout<Int16>.size
-    FileHandle.standardOutput.write(Data(bytes: samples, count: byteCount))
+    let pcm = Data(bytes: samples, count: byteCount)
+    if !CaptureStandardOutput.write(pcm, to: .standardOutput) {
+      throw CaptureError.standardOutputClosed
+    }
   }
 }
 
 private final class CaptureLifecycle: @unchecked Sendable {
   private let lock = NSLock()
   private let failureQueue = DispatchQueue(label: "ai.openclaw.facetime-capture-failure")
+  private let parentLoss = ParentLossCoordinator()
   private var failure: Error?
-  private var stopping = false
   private lazy var captureOverflowSignal: DispatchSourceUserDataAdd = {
     let source = DispatchSource.makeUserDataAddSource(queue: self.failureQueue)
     source.setEventHandler { [weak self] in
@@ -621,15 +627,30 @@ private final class CaptureLifecycle: @unchecked Sendable {
   }
 
   func requestStop() {
-    self.lock.lock()
-    self.stopping = true
-    self.lock.unlock()
+    self.parentLoss.requestStop()
+  }
+
+  func setParentLostHandler(_ handler: @escaping @Sendable () -> Void) {
+    self.parentLoss.setHandler(handler)
+  }
+
+  func markCloseSafe() {
+    self.parentLoss.markCloseSafe()
+  }
+
+  func notifyParentLost() {
+    self.parentLoss.notifyParentLost()
+  }
+
+  func handleUnexpectedParentEOF() {
+    self.parentLoss.handleUnexpectedParentEOF()
   }
 
   func state() -> (failure: Error?, stopping: Bool) {
     self.lock.lock()
-    defer { self.lock.unlock() }
-    return (self.failure, self.stopping)
+    let failure = self.failure
+    self.lock.unlock()
+    return (failure, self.parentLoss.isStopping())
   }
 }
 
@@ -820,10 +841,15 @@ private final class NativePlayback: @unchecked Sendable {
 private final class ParentCommandReader: @unchecked Sendable {
   private let playback: NativePlayback?
   private let unexpectedEOF: () -> Void
-  private var closeSafe = false
+  private let markCloseSafe: () -> Void
 
-  init(playback: NativePlayback? = nil, unexpectedEOF: @escaping () -> Void) {
+  init(
+    playback: NativePlayback? = nil,
+    markCloseSafe: @escaping () -> Void = {},
+    unexpectedEOF: @escaping () -> Void
+  ) {
     self.playback = playback
+    self.markCloseSafe = markCloseSafe
     self.unexpectedEOF = unexpectedEOF
   }
 
@@ -833,9 +859,7 @@ private final class ParentCommandReader: @unchecked Sendable {
       while true {
         let chunk = FileHandle.standardInput.availableData
         if chunk.isEmpty {
-          if !self.closeSafe {
-            self.unexpectedEOF()
-          }
+          self.unexpectedEOF()
           return
         }
         buffered.append(chunk)
@@ -859,7 +883,7 @@ private final class ParentCommandReader: @unchecked Sendable {
             } else if type == 3 {
               self.playback?.clear(generation: generation)
             } else if type == 4 {
-              self.closeSafe = true
+              self.markCloseSafe()
             }
           }
         }
@@ -902,6 +926,9 @@ private final class ProcessTap: @unchecked Sendable {
     self.writer = try PCMWriter(streamDescription: streamDescription) { [lifecycle] error in
       if lifecycle.fail(error) {
         fputs("facetime-audio-capture: fatal: \(error.localizedDescription)\n", stderr)
+      }
+      if let captureError = error as? CaptureError, case .standardOutputClosed = captureError {
+        lifecycle.notifyParentLost()
       }
     }
 
@@ -1092,6 +1119,7 @@ private func waitForTerminationSignal(
 private struct FaceTimeAudioCapture {
   static func main() async {
     do {
+      CaptureStandardOutput.ignoreBrokenPipeSignal()
       let arguments = try Arguments.parse(Array(CommandLine.arguments.dropFirst()))
       guard
         let usageDescription = Bundle.main.object(
@@ -1147,6 +1175,13 @@ private struct FaceTimeAudioCapture {
       let selectedDescription = selected.map { "\($0.name) (pid \($0.pid))" }.joined(
         separator: ", ")
       let lifecycle = CaptureLifecycle()
+      var currentProcess = selected[0]
+      let ownerRef = CarrierOwnerRef(currentProcess)
+      if !arguments.checkOnly {
+        lifecycle.setParentLostHandler {
+          ownerRef.terminateIfCurrent(requestedNames: requestedNames)
+        }
+      }
       let tap = try ProcessTap(
         processObjectIDs: selected.map(\.objectID), lifecycle: lifecycle)
       var taps = [tap]
@@ -1163,14 +1198,13 @@ private struct FaceTimeAudioCapture {
           stderr)
         return
       }
-      var currentProcess = selected[0]
-      let ownerRef = CarrierOwnerRef(currentProcess)
       // The OpenClaw host owns playback in a separate SoX process. Constructing
       // another AVAudioEngine here can rebind OpenClaw-Feed after FaceTime has
       // claimed the paired route and tear down the carrier.
-      let parentCommands = ParentCommandReader {
-        ownerRef.terminateIfCurrent(requestedNames: requestedNames)
-        lifecycle.requestStop()
+      let parentCommands = ParentCommandReader(
+        markCloseSafe: { lifecycle.markCloseSafe() }
+      ) {
+        lifecycle.handleUnexpectedParentEOF()
       }
       parentCommands.start()
       while true {
