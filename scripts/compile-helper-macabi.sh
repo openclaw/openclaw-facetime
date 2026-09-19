@@ -73,6 +73,7 @@ for helper_arch in "${helper_arches[@]}"; do
     -I "${helper_dir}/FaceTimeHelper/ZKSwizzle" \
     -iframework /System/Library/PrivateFrameworks \
     "${helper_dir}/FaceTimeHelper/ConnectionAuthentication.m" \
+    "${helper_dir}/FaceTimeHelper/MutedFlag.m" \
     "${helper_dir}/FaceTimeHelper/FaceTimeHelper.m" \
     "${helper_dir}/FaceTimeHelper/NetworkController.m" \
     -framework Foundation \

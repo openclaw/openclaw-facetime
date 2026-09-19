@@ -9,6 +9,7 @@
 
 #import "NetworkController.h"
 #import "ConnectionAuthentication.h"
+#import "MutedFlag.h"
 #import "Logging.h"
 #import "TUConversationManager.h"
 #import "TUConversationManagerXPCClient.h"
@@ -680,7 +681,16 @@ FACETIMEHELPER *plugin;
             return;
         }
 
-        BOOL muted = [data[@"muted"] boolValue];
+        BOOL muted = NO;
+        if (!OpenClawFaceTimeParseMutedFlag(data[@"muted"], &muted)) {
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": @"muted must be a boolean",
+                }];
+            }
+            return;
+        }
         if (!muted && !IsVerifiedFaceTimeCall(call)) {
             if (transaction != nil) {
                 [controller sendMessage: @{

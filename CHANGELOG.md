@@ -8,6 +8,9 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Reject `set-muted` unless `muted` is a JSON boolean. `null` no longer
+  crashes FaceTime, and a missing field or number no longer unmutes a
+  live call.
 - Dispatch the Homebrew updater with the tap-owned FaceTime profile alone,
   without the conflicting artifact override that prevented formula updates.
 - Bind release signing and verification to the validated commit, and recheck
