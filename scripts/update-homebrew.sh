@@ -33,7 +33,6 @@ gh workflow run update-formula.yml \
   -f formula_profile=openclaw-facetime \
   -f tag="${tag}" \
   -f repository=openclaw/openclaw-facetime \
-  -f macos_artifact=openclaw-facetime-macos-arm64.zip \
   -f request_id="${request_id}"
 
 run_id=""

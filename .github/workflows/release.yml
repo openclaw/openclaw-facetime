@@ -262,7 +262,7 @@ jobs:
           exit "$cleanup_status"
 
   release:
-    name: 4 · Draft, verify, publish, and hand off
+    name: 4 · Draft, verify, and publish
     needs: [validate, tag, sign]
     runs-on: macos-15
     timeout-minutes: 30
@@ -338,42 +338,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
         run: gh release edit "$TAG" --draft=false
-      - name: Validate Homebrew handoff readiness
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ "$(gh api repos/openclaw/homebrew-tap --jq .default_branch)" == "main" ]] || {
-            echo "openclaw/homebrew-tap must use main as its default branch" >&2
-            exit 1
-          }
-          [[ "$(gh api repos/openclaw/homebrew-tap/actions/workflows/update-formula.yml --jq .state)" == "active" ]] || {
-            echo "openclaw/homebrew-tap update-formula.yml is not active" >&2
-            exit 1
-          }
-          tap_profile="$RUNNER_TEMP/openclaw-facetime.rb"
-          if ! gh api 'repos/openclaw/homebrew-tap/contents/.github/formula-profiles/openclaw-facetime.rb?ref=main' \
-            --jq .content | base64 --decode >"$tap_profile"; then
-            echo "The openclaw-facetime formula profile must be merged in openclaw/homebrew-tap before Homebrew dispatch" >&2
-            exit 1
-          fi
-          if ! cmp -s packaging/homebrew/openclaw-facetime.rb "$tap_profile"; then
-            echo "The tap's openclaw-facetime profile differs from the reviewed native formula contract" >&2
-            exit 1
-          fi
-          workflow_source="$RUNNER_TEMP/update-formula.yml"
-          gh api 'repos/openclaw/homebrew-tap/contents/.github/workflows/update-formula.yml?ref=main' \
-            --jq .content | base64 --decode >"$workflow_source"
-          if ! grep -Eq '^[[:space:]]+formula_profile:' "$workflow_source"; then
-            echo "The tap updater does not expose the required formula_profile input" >&2
-            exit 1
-          fi
-      - name: Update OpenClaw Homebrew tap
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          HOMEBREW_FORMULA: openclaw-facetime
-          HOMEBREW_TAP_REPOSITORY: openclaw/homebrew-tap
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          [[ -n "$GH_TOKEN" ]] || { echo "missing release secret: HOMEBREW_TAP_TOKEN" >&2; exit 1; }
-          scripts/update-homebrew.sh "$TAG"
+
+  homebrew:
+    name: 5 · Update Homebrew
+    needs: [validate, release]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/homebrew-handoff.yml
+    with:
+      native-source-sha: ${{ needs.validate.outputs.target-sha }}
+      tag: ${{ needs.validate.outputs.tag }}
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

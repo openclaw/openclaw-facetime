@@ -97,6 +97,20 @@ profile after the verified release is public, allowing the tap to download and
 hash the asset before it seeds or updates the formula. `HOMEBREW_TAP_TOKEN`
 needs Actions write only; the tap's own `GITHUB_TOKEN` owns formula commits.
 
+If publication succeeded but the tap handoff failed, repair the tap credential
+or profile first, then dispatch **Homebrew** from current protected `main`.
+This retry uses the version in `version.env` and requires its published archive
+and SHA-256 digest. It runs the canonical updater with `HOMEBREW_TAP_TOKEN` and
+waits for the matching tap run to finish. It does not rebuild, sign, or modify
+the native release. There is no tag input: older releases require a separate
+maintainer decision. A successful retry of an already-current formula is a no-op.
+
+Both entrypoints use the same readiness and dispatch workflow. It requires the
+active tap updater and a byte-identical profile before using the tap token.
+On historical release reruns, the expected profile comes from the validated
+native commit, while the updater comes from the frozen workflow commit. Older
+tags do not need to contain the shared workflow or the corrected updater.
+
 The formula preserves both Mach-O signatures with `skip_clean` and installs all
 seven files under `opt/openclaw-facetime/libexec`, which is the plugin's native
 artifact contract. It also declares SoX for the OpenClaw host's separate

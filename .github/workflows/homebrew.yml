@@ -1,0 +1,60 @@
+name: Homebrew
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: facetime-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - name: Verify protected source
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const repository = await github.rest.repos.get(context.repo);
+            const branchName = repository.data.default_branch;
+            const branch = await github.rest.repos.getBranch({ ...context.repo, branch: branchName });
+            if (repository.data.visibility !== 'public' || branch.data.protected !== true ||
+                context.ref !== `refs/heads/${branchName}` || context.sha !== branch.data.commit.sha) {
+              throw new Error('Homebrew handoff must run from current protected main in the public repository');
+            }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Read current version
+        id: version
+        run: |
+          version="$(scripts/native-version.sh)"
+          echo "tag=v$version" >>"$GITHUB_OUTPUT"
+      - name: Verify published archive
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        with:
+          script: |
+            const release = await github.rest.repos.getReleaseByTag({ ...context.repo, tag: process.env.TAG });
+            const archive = release.data.assets.find((asset) => asset.name === 'openclaw-facetime-macos-arm64.zip');
+            if (release.data.draft || archive?.state !== 'uploaded' || !/^sha256:[0-9a-f]{64}$/.test(archive.digest)) {
+              throw new Error('Homebrew handoff requires the published current-version archive and its SHA-256 digest');
+            }
+            core.info(`Retrying Homebrew for ${process.env.TAG}: ${archive.digest}`);
+
+  homebrew:
+    needs: prepare
+    uses: ./.github/workflows/homebrew-handoff.yml
+    with:
+      native-source-sha: ${{ github.sha }}
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

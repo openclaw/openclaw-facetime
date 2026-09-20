@@ -109,12 +109,12 @@ describe("privileged FaceTime support boundaries", () => {
     const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
     const tagJob = releaseWorkflow.indexOf("\n  tag:");
     const readinessGate = releaseWorkflow.indexOf("Validate release prerequisites");
-    const handoffGate = releaseWorkflow.indexOf("Validate Homebrew handoff readiness");
+    const handoffJob = releaseWorkflow.indexOf("\n  homebrew:");
     const beforeTag = releaseWorkflow.slice(0, tagJob);
 
     expect(readinessGate).toBeGreaterThan(0);
     expect(readinessGate).toBeLessThan(tagJob);
-    expect(handoffGate).toBeGreaterThan(tagJob);
+    expect(handoffJob).toBeGreaterThan(tagJob);
     expect(beforeTag).toContain("workflow_id: 'ci.yml'");
     expect(beforeTag).toContain("run.conclusion === 'success'");
     expect(beforeTag).toContain("REPOSITORY_VISIBILITY");
@@ -134,23 +134,34 @@ describe("privileged FaceTime support boundaries", () => {
 
   it("publishes before checking the tap profile and dispatches only after it matches", () => {
     const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
+    const handoffWorkflow = readFileSync(".github/workflows/homebrew-handoff.yml", "utf8");
     const releaseJob = releaseWorkflow.indexOf("\n  release:");
     const verifyAssets = releaseWorkflow.indexOf("Download and independently verify release assets", releaseJob);
     const publishDraft = releaseWorkflow.indexOf("Publish verified draft", releaseJob);
-    const handoffGate = releaseWorkflow.indexOf("Validate Homebrew handoff readiness", releaseJob);
-    const updateTap = releaseWorkflow.indexOf("Update OpenClaw Homebrew tap", releaseJob);
+    const handoffJob = releaseWorkflow.indexOf("\n  homebrew:");
+    const handoffGate = handoffWorkflow.indexOf("Validate Homebrew handoff readiness");
+    const updateTap = handoffWorkflow.indexOf("Update OpenClaw Homebrew tap");
 
     expect(verifyAssets).toBeGreaterThan(releaseJob);
     expect(publishDraft).toBeGreaterThan(verifyAssets);
-    expect(handoffGate).toBeGreaterThan(publishDraft);
+    expect(handoffJob).toBeGreaterThan(publishDraft);
+    expect(releaseWorkflow.slice(handoffJob)).toContain("needs: [validate, release]");
+    expect(releaseWorkflow.slice(handoffJob)).toContain("contents: read");
+    expect(releaseWorkflow.slice(handoffJob)).toContain("uses: ./.github/workflows/homebrew-handoff.yml");
+    expect(releaseWorkflow.slice(handoffJob)).toContain("native-source-sha: ${{ needs.validate.outputs.target-sha }}");
+    expect(releaseWorkflow.slice(handoffJob)).toContain("tag: ${{ needs.validate.outputs.tag }}");
+    expect(releaseWorkflow.slice(handoffJob)).not.toContain("always()");
+    expect(releaseWorkflow.slice(handoffJob)).not.toContain("secrets: inherit");
+    expect(handoffGate).toBeGreaterThan(0);
     expect(updateTap).toBeGreaterThan(handoffGate);
-    expect(releaseWorkflow.slice(handoffGate, updateTap)).toContain(
+    expect(handoffWorkflow.slice(handoffGate, updateTap)).toContain(
       ".github/formula-profiles/openclaw-facetime.rb",
     );
-    expect(releaseWorkflow.slice(handoffGate, updateTap)).toContain(
-      'cmp -s packaging/homebrew/openclaw-facetime.rb "$tap_profile"',
+    expect(handoffWorkflow.slice(handoffGate, updateTap)).toContain(
+      'packaging/homebrew/openclaw-facetime.rb?ref=$NATIVE_SOURCE_SHA',
     );
-    expect(releaseWorkflow.slice(handoffGate, updateTap)).toContain("formula_profile");
+    expect(handoffWorkflow.slice(handoffGate, updateTap)).toContain('cmp -s "$native_profile" "$tap_profile"');
+    expect(handoffWorkflow.slice(handoffGate, updateTap)).toContain("formula_profile");
   });
 
   it("restores the signing search list and resumes existing releases", () => {

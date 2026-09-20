@@ -11,12 +11,17 @@ here. Published versions are listed in
 - Keep FaceTime capture alive during bounded audio backpressure by replacing
   stale pending frames instead of treating ordinary queue saturation as a
   fatal conversion failure.
+- Dispatch the Homebrew updater with the tap-owned FaceTime profile alone,
+  without the conflicting artifact override that prevented formula updates.
 - Bind release signing and verification to the validated commit, and recheck
   the frozen annotated tag before release writes, publication, and handoff.
   Same-named branches and moved tags cannot substitute release source.
 
 ### Added
 
+- A current-version Homebrew retry workflow for recovering a failed tap handoff
+  after native release publication, without rebuilding or republishing assets.
+  Release and recovery share the same tap-profile readiness checks.
 - Repository ownership, contribution templates, private security reporting
   guidance, editor defaults, and dependency update automation.
 - CodeQL analysis for Swift capture code, the TypeScript test harness, the

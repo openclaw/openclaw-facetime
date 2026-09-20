@@ -1,0 +1,70 @@
+name: Homebrew handoff
+
+on:
+  workflow_call:
+    inputs:
+      native-source-sha:
+        required: true
+        type: string
+      tag:
+        required: true
+        type: string
+    secrets:
+      HOMEBREW_TAP_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Control code follows the frozen workflow; the native contract can be older.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Validate Homebrew handoff readiness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_SOURCE_SHA: ${{ inputs.native-source-sha }}
+        run: |
+          set -euo pipefail
+          [[ "$NATIVE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$(gh api repos/openclaw/homebrew-tap --jq .default_branch)" == "main" ]] || {
+            echo "openclaw/homebrew-tap must use main as its default branch" >&2
+            exit 1
+          }
+          [[ "$(gh api repos/openclaw/homebrew-tap/actions/workflows/update-formula.yml --jq .state)" == "active" ]] || {
+            echo "openclaw/homebrew-tap update-formula.yml is not active" >&2
+            exit 1
+          }
+          tap_profile="$RUNNER_TEMP/openclaw-facetime.rb"
+          if ! gh api 'repos/openclaw/homebrew-tap/contents/.github/formula-profiles/openclaw-facetime.rb?ref=main' \
+            --jq .content | base64 --decode >"$tap_profile"; then
+            echo "The openclaw-facetime formula profile must be merged in openclaw/homebrew-tap before Homebrew dispatch" >&2
+            exit 1
+          fi
+          native_profile="$RUNNER_TEMP/native-openclaw-facetime.rb"
+          gh api "repos/$GITHUB_REPOSITORY/contents/packaging/homebrew/openclaw-facetime.rb?ref=$NATIVE_SOURCE_SHA" \
+            --jq .content | base64 --decode >"$native_profile"
+          if ! cmp -s "$native_profile" "$tap_profile"; then
+            echo "The tap's openclaw-facetime profile differs from the reviewed native formula contract" >&2
+            exit 1
+          fi
+          workflow_source="$RUNNER_TEMP/update-formula.yml"
+          gh api 'repos/openclaw/homebrew-tap/contents/.github/workflows/update-formula.yml?ref=main' \
+            --jq .content | base64 --decode >"$workflow_source"
+          if ! grep -Eq '^[[:space:]]+formula_profile:' "$workflow_source"; then
+            echo "The tap updater does not expose the required formula_profile input" >&2
+            exit 1
+          fi
+      - name: Update OpenClaw Homebrew tap
+        env:
+          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ -n "$GH_TOKEN" ]] || { echo "HOMEBREW_TAP_TOKEN is required" >&2; exit 1; }
+          scripts/update-homebrew.sh "$TAG"
