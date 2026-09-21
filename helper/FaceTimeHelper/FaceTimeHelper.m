@@ -845,32 +845,26 @@ FACETIMEHELPER *plugin;
                     @"transactionId": transaction,
                     @"error": exception.reason ?: @"FaceTime dial outcome is unknown",
                     @"ambiguous": @YES,
+                    @"dial_id": dialID,
                 }];
             }
             return;
         }
         if (call == nil) {
             if (transaction != nil) {
-                [controller sendMessage: @{@"transactionId": transaction, @"error": @"FaceTime did not create an outbound call"}];
-            }
-            return;
-        }
-        if (!ApplyOutboundSafetyMute(call)) {
-            [[TUCallCenter sharedInstance] disconnectCall:call];
-            if (transaction != nil) {
                 [controller sendMessage: @{
                     @"transactionId": transaction,
-                    @"error": @"Outbound call transport or safety mute could not be verified",
-                    @"transport": CallTransportEvidence(call),
+                    @"error": @"FaceTime did not return an outbound call identity",
+                    @"ambiguous": @YES,
+                    @"dial_id": dialID,
                 }];
             }
             return;
         }
         OutboundCallsByDialID[dialID] = call;
 
-        // Publish Apple's identity before the delayed acceptance check. The
-        // gateway retains it across helper reinjection without overwriting the
-        // reserved uniqueProxyIdentifier on TUDialRequest.
+        // Once dialWithRequest returns a carrier, every later failure needs
+        // reconciliation. Retain and publish its identity before checking mute.
         [controller sendMessage: @{
             @"event": @"ft-outbound-call-identified",
             @"data": @{
@@ -879,6 +873,22 @@ FACETIMEHELPER *plugin;
                 @"proxy_identifier": [call uniqueProxyIdentifier] ?: [NSNull null],
             },
         }];
+
+        if (!ApplyOutboundSafetyMute(call)) {
+            [[TUCallCenter sharedInstance] disconnectCall:call];
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": @"Outbound call transport or safety mute could not be verified",
+                    @"ambiguous": @YES,
+                    @"dial_id": dialID,
+                    @"call_uuid": [call callUUID] ?: [NSNull null],
+                    @"proxy_identifier": [call uniqueProxyIdentifier] ?: [NSNull null],
+                    @"transport": CallTransportEvidence(call),
+                }];
+            }
+            return;
+        }
 
         // CSD can discard the provisional call after dialWithRequest returns.
         // Let its state machine run before claiming that the dial was accepted.
@@ -890,6 +900,9 @@ FACETIMEHELPER *plugin;
                         @"transactionId": transaction,
                         @"error": @"FaceTime ended the outbound call before it could ring",
                         @"ambiguous": @YES,
+                        @"dial_id": dialID,
+                        @"call_uuid": [call callUUID] ?: [NSNull null],
+                        @"proxy_identifier": [call uniqueProxyIdentifier] ?: [NSNull null],
                     }];
                 }
                 return;
@@ -901,6 +914,10 @@ FACETIMEHELPER *plugin;
                     [controller sendMessage: @{
                         @"transactionId": transaction,
                         @"error": @"Outbound safety mute was not retained while ringing",
+                        @"ambiguous": @YES,
+                        @"dial_id": dialID,
+                        @"call_uuid": [stableCall callUUID] ?: [NSNull null],
+                        @"proxy_identifier": [stableCall uniqueProxyIdentifier] ?: [NSNull null],
                         @"transport": CallTransportEvidence(stableCall),
                     }];
                 }

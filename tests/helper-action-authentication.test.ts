@@ -114,4 +114,27 @@ describe("FaceTime helper native contracts", () => {
       );
     },
   );
+  it(
+    "retains exact carrier identity when safety checks fail after dialing",
+    { timeout: 20_000 },
+    () => {
+      const helper = readFileSync("helper/FaceTimeHelper/FaceTimeHelper.m", "utf8");
+      const action = helper.indexOf('} else if ([event isEqualToString:@"start-call"]) {');
+      const start = helper.indexOf("\n", action) + 1;
+      const end = helper.indexOf(
+        '    } else if ([event isEqualToString:@"find-outgoing-call"])',
+        start,
+      );
+      expect(action).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      // Compile the actual dispatch branch verbatim against synthetic Apple
+      // carriers. This exercises private-API reply ordering without dialing or
+      // adding test hooks to the injected helper; authentication is covered above.
+      const fixture = readFileSync("helper/tests/OutboundCallReconciliationTests.m", "utf8");
+      runNativeCheck(
+        [],
+        fixture.replace("/* OPENCLAW_START_CALL_BODY */", helper.slice(start, end)),
+      );
+    },
+  );
 });

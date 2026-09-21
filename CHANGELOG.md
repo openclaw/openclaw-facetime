@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Retain and report outbound carrier identities when native safety checks fail after dialing, so the Gateway can reconcile or cancel a call that may still be active. (#35)
+
 - Keep outgoing-call lookup from muting, disconnecting, or adopting a non-FaceTime call while preserving owned-carrier reconciliation and explicit cancellation. Thanks @SebTardif. (#31)
 - Reject malformed `set-muted` values before changing call audio; only JSON booleans may mute or unmute a call. Thanks @SebTardif. (#30)
 - Keep FaceTime capture alive during bounded audio backpressure by replacing
