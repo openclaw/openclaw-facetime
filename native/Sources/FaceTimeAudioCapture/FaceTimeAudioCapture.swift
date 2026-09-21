@@ -446,11 +446,8 @@ private final class PCMWriter: @unchecked Sendable {
   private let sourceFormat: AVAudioFormat
   private let converter: AVAudioConverter
   private let slots: [AVAudioPCMBuffer]
-  private let available = DispatchSemaphore(value: PCMWriter.slotCount)
-  private let pendingLock = NSLock()
   private let worker = DispatchQueue(label: "ai.openclaw.facetime-capture-writer")
-  private let pending = FixedSlotRing(capacity: PCMWriter.slotCount)
-  private var nextSlot = 0
+  private let pending = FixedSlotQueue(capacity: PCMWriter.slotCount)
   private let onFailure: @Sendable (Error) -> Void
   private lazy var workerSignal: DispatchSourceUserDataAdd = {
     let source = DispatchSource.makeUserDataAddSource(queue: self.worker)
@@ -483,74 +480,57 @@ private final class PCMWriter: @unchecked Sendable {
   }
 
   func enqueue(_ audioBufferList: UnsafePointer<AudioBufferList>) -> Bool {
-    guard self.available.wait(timeout: .now()) == .success else {
-      return false
-    }
-    guard self.pendingLock.try() else {
-      // A slot was reserved before the lock attempt. Return its permit when a
-      // concurrent drain briefly owns the ring lock.
-      self.available.signal()
-      return false
-    }
-    let slotIndex = self.nextSlot
-    self.nextSlot = (self.nextSlot + 1) % Self.slotCount
-    let source = UnsafeMutableAudioBufferListPointer(
-      UnsafeMutablePointer(mutating: audioBufferList))
-    // AVAudioPCMBuffer narrows mDataByteSize to frameLength. Restore the full
-    // capacity before reusing a slot that previously held a shorter callback.
-    self.slots[slotIndex].frameLength = Self.slotFrames
-    let target = UnsafeMutableAudioBufferListPointer(self.slots[slotIndex].mutableAudioBufferList)
-    guard source.count == target.count else {
-      self.pendingLock.unlock()
-      self.available.signal()
-      return false
-    }
-    let bytesPerFrame = max(Int(self.sourceFormat.streamDescription.pointee.mBytesPerFrame), 1)
-    var frameLength = Int.max
-    for index in 0..<source.count {
-      let byteCount = Int(source[index].mDataByteSize)
-      guard byteCount <= Int(target[index].mDataByteSize),
-        let sourceData = source[index].mData,
-        let targetData = target[index].mData
-      else {
-        self.pendingLock.unlock()
-        self.available.signal()
-        return false
+    let result = self.pending.tryEnqueue { slotIndex in
+      let source = UnsafeMutableAudioBufferListPointer(
+        UnsafeMutablePointer(mutating: audioBufferList))
+      // AVAudioPCMBuffer narrows mDataByteSize to frameLength. Restore the full
+      // capacity before reusing a slot that previously held a shorter callback.
+      self.slots[slotIndex].frameLength = Self.slotFrames
+      let target = UnsafeMutableAudioBufferListPointer(
+        self.slots[slotIndex].mutableAudioBufferList)
+      guard source.count == target.count else { return false }
+      let bytesPerFrame = max(
+        Int(self.sourceFormat.streamDescription.pointee.mBytesPerFrame), 1)
+      var frameLength = Int.max
+      for index in 0..<source.count {
+        let byteCount = Int(source[index].mDataByteSize)
+        guard byteCount <= Int(target[index].mDataByteSize),
+          let sourceData = source[index].mData,
+          let targetData = target[index].mData
+        else { return false }
+        memcpy(targetData, sourceData, byteCount)
+        target[index].mDataByteSize = UInt32(byteCount)
+        frameLength = min(frameLength, byteCount / bytesPerFrame)
       }
-      memcpy(targetData, sourceData, byteCount)
-      target[index].mDataByteSize = UInt32(byteCount)
-      frameLength = min(frameLength, byteCount / bytesPerFrame)
+      guard frameLength >= 0, frameLength <= Int(Self.slotFrames) else { return false }
+      self.slots[slotIndex].frameLength = AVAudioFrameCount(frameLength)
+      return true
     }
-    guard frameLength >= 0, frameLength <= Int(Self.slotFrames) else {
-      self.pendingLock.unlock()
-      self.available.signal()
+    switch result {
+    case .enqueued, .replacedOldest:
+      self.workerSignal.add(data: 1)
+      return true
+    case .droppedContention, .droppedFull:
+      // The realtime callback must never block behind the drain worker. A
+      // dropped frame is safer than treating bounded backpressure as a fatal
+      // capture failure and tearing down a healthy call.
+      return true
+    case .rejected:
       return false
     }
-    self.slots[slotIndex].frameLength = AVAudioFrameCount(frameLength)
-    guard self.pending.append(slotIndex) else {
-      self.pendingLock.unlock()
-      self.available.signal()
-      return false
-    }
-    self.pendingLock.unlock()
-    self.workerSignal.add(data: 1)
-    return true
   }
 
   private func drainPending() {
     while true {
-      self.pendingLock.lock()
       guard let slotIndex = self.pending.removeFirst() else {
-        self.pendingLock.unlock()
         return
       }
-      self.pendingLock.unlock()
       do {
         try self.convertAndWrite(self.slots[slotIndex])
       } catch {
         self.onFailure(error)
       }
-      self.available.signal()
+      self.pending.complete(slotIndex)
     }
   }
 

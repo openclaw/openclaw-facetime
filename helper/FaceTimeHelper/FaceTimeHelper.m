@@ -9,7 +9,6 @@
 
 #import "NetworkController.h"
 #import "ConnectionAuthentication.h"
-#import "MutedFlag.h"
 #import "Logging.h"
 #import "TUConversationManager.h"
 #import "TUConversationManagerXPCClient.h"
@@ -681,8 +680,10 @@ FACETIMEHELPER *plugin;
             return;
         }
 
-        BOOL muted = NO;
-        if (!OpenClawFaceTimeParseMutedFlag(data[@"muted"], &muted)) {
+        id mutedValue = data[@"muted"];
+        // JSON numbers also bridge to NSNumber; only CFBoolean authorizes a mute change.
+        if (![mutedValue isKindOfClass:[NSNumber class]] ||
+            CFGetTypeID((__bridge CFTypeRef)mutedValue) != CFBooleanGetTypeID()) {
             if (transaction != nil) {
                 [controller sendMessage: @{
                     @"transactionId": transaction,
@@ -691,6 +692,7 @@ FACETIMEHELPER *plugin;
             }
             return;
         }
+        BOOL muted = [mutedValue boolValue];
         if (!muted && !IsVerifiedFaceTimeCall(call)) {
             if (transaction != nil) {
                 [controller sendMessage: @{

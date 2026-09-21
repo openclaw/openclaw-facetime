@@ -31,4 +31,4 @@ belong in `openclaw/openclaw`. Read `README.md` and `CONTRIBUTING.md` first.
   remains separate from the MIT/Apache native release archive.
 - Read `docs/RELEASING.md` before release work. Local ad-hoc-signed archives are
   development artifacts; only the Foundation release workflow publishes.
-- Edit this file rather than its `CLAUDE.md` symlink.
+- Edit this file directly; do not add `CLAUDE.md` aliases.
