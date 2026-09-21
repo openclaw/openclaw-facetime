@@ -8,11 +8,14 @@ here. Published versions are listed in
 
 ### Fixed
 
-- Ignore SIGPIPE on capture stdout and treat a broken pipe like parent
-  death so FaceTime or Phone still receives the intended terminate.
-  Carrier cleanup finishes before the muted tap is released, and an
-  explicit safe-close command still suppresses termination if stdout
-  closes afterward.
+- Retain audio suppression through stdin/stdout loss until captured and successor carriers are confirmed stopped; retry uncertain settlement and preserve explicit safe-close behavior. Thanks @SebTardif. (#32)
+- Bind capture shutdown signals to the captured process generation so PID reuse cannot target another process, and let queued safe-close commands take precedence over stdout failure. (#32)
+- Keep FaceTime capture alive during bounded audio backpressure by replacing
+  stale pending frames instead of treating ordinary queue saturation as a
+  fatal conversion failure.
+- Distinguish unknown or failed SIP status checks from enabled debugging
+  restrictions before helper injection. Unknown status now asks for manual
+  verification instead of recommending a security-policy change.
 - Dispatch the Homebrew updater with the tap-owned FaceTime profile alone,
   without the conflicting artifact override that prevented formula updates.
 - Bind release signing and verification to the validated commit, and recheck

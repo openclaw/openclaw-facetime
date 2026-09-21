@@ -1,10 +1,12 @@
 import Foundation
 
-/// One-shot parent-loss cleanup shared by stdin EOF and stdout pipe failure.
+/// The ordered control stream owns close intent; stdout failure can arrive first.
 final class ParentLossCoordinator: @unchecked Sendable {
   private let lock = NSLock()
   private var handler: (@Sendable () -> Void)?
   private var closeSafe = false
+  private var outputClosed = false
+  private var stopRequested = false
   private var claimed = false
   private var stopping = false
 
@@ -17,13 +19,11 @@ final class ParentLossCoordinator: @unchecked Sendable {
   func markCloseSafe() {
     self.lock.lock()
     self.closeSafe = true
+    if (self.outputClosed || self.stopRequested) && !self.claimed {
+      self.stopping = true
+      self.handler = nil
+    }
     self.lock.unlock()
-  }
-
-  func isCloseSafe() -> Bool {
-    self.lock.lock()
-    defer { self.lock.unlock() }
-    return self.closeSafe
   }
 
   func isStopping() -> Bool {
@@ -34,34 +34,39 @@ final class ParentLossCoordinator: @unchecked Sendable {
 
   func requestStop() {
     self.lock.lock()
-    if self.claimed && !self.stopping {
-      self.lock.unlock()
-      return
+    self.stopRequested = true
+    // A signal can overtake a queued safe-close marker just like stdout loss.
+    // Only the ordered control stream can authorize release or settlement.
+    if self.closeSafe && !self.claimed {
+      self.stopping = true
+      self.handler = nil
     }
-    self.stopping = true
     self.lock.unlock()
   }
 
-  func notifyParentLost() {
+  func handleOutputClosed() {
     self.lock.lock()
-    if self.claimed {
+    self.outputClosed = true
+    if self.closeSafe && !self.claimed {
+      self.stopping = true
+      self.handler = nil
+    }
+    self.lock.unlock()
+  }
+
+  func handleUnexpectedParentEOF() {
+    self.lock.lock()
+    if self.closeSafe || self.claimed {
       self.lock.unlock()
       return
     }
     self.claimed = true
-    let handler = self.closeSafe ? nil : self.handler
+    let handler = self.handler
     self.handler = nil
     self.lock.unlock()
     handler?()
     self.lock.lock()
     self.stopping = true
     self.lock.unlock()
-  }
-
-  func handleUnexpectedParentEOF() {
-    if self.isCloseSafe() {
-      return
-    }
-    self.notifyParentLost()
   }
 }

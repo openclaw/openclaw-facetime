@@ -1,26 +1,5 @@
 import Foundation
 
-private final class Flag: @unchecked Sendable {
-  private let lock = NSLock()
-  private var value: Bool
-
-  init(_ value: Bool) {
-    self.value = value
-  }
-
-  func set(_ value: Bool) {
-    self.lock.lock()
-    self.value = value
-    self.lock.unlock()
-  }
-
-  func get() -> Bool {
-    self.lock.lock()
-    defer { self.lock.unlock() }
-    return self.value
-  }
-}
-
 private final class Counter: @unchecked Sendable {
   private let lock = NSLock()
   private var value = 0
@@ -41,25 +20,8 @@ private final class Counter: @unchecked Sendable {
 @main
 private struct ParentLossCoordinatorChecks {
   static func main() {
-    unexpectedPipeLossFinishesCleanupBeforeStopping()
     concurrentStdinEOFAndStdoutFailureRunCleanupOnce()
-    mutedTapStaysUntilCarrierCleanupCompletes()
     safeCloseThenStdoutFailureDoesNotTerminate()
-  }
-
-  private static func unexpectedPipeLossFinishesCleanupBeforeStopping() {
-    let coordinator = ParentLossCoordinator()
-    let stoppingDuringCleanup = Flag(true)
-    coordinator.setHandler {
-      stoppingDuringCleanup.set(coordinator.isStopping())
-    }
-    coordinator.notifyParentLost()
-    precondition(
-      coordinator.isStopping(),
-      "unexpected pipe loss must publish stopping after cleanup")
-    precondition(
-      !stoppingDuringCleanup.get(),
-      "unexpected pipe loss must finish carrier cleanup before publishing stopping")
   }
 
   private static func concurrentStdinEOFAndStdoutFailureRunCleanupOnce() {
@@ -75,7 +37,7 @@ private struct ParentLossCoordinatorChecks {
 
     let group = DispatchGroup()
     DispatchQueue.global(qos: .userInitiated).async(group: group) {
-      coordinator.notifyParentLost()
+      coordinator.handleOutputClosed()
     }
     DispatchQueue.global(qos: .userInitiated).async(group: group) {
       coordinator.handleUnexpectedParentEOF()
@@ -93,53 +55,24 @@ private struct ParentLossCoordinatorChecks {
     precondition(invocations.get() == 1, "a second parent-loss path must not start another teardown")
   }
 
-  private static func mutedTapStaysUntilCarrierCleanupCompletes() {
-    let coordinator = ParentLossCoordinator()
-    let tapPresent = Flag(true)
-    let cleanupStarted = DispatchSemaphore(value: 0)
-    let finishCleanup = DispatchSemaphore(value: 0)
-    coordinator.setHandler {
-      cleanupStarted.signal()
-      finishCleanup.wait()
-    }
-
-    let group = DispatchGroup()
-    DispatchQueue.global(qos: .userInitiated).async(group: group) {
-      coordinator.notifyParentLost()
-    }
-    DispatchQueue.global(qos: .userInitiated).async(group: group) {
-      while !coordinator.isStopping() {
-        Thread.sleep(forTimeInterval: 0.001)
-      }
-      tapPresent.set(false)
-    }
-
-    cleanupStarted.wait()
-    precondition(
-      tapPresent.get(),
-      "muted tap must stay until carrier cleanup completes")
-    finishCleanup.signal()
-    group.wait()
-    precondition(!tapPresent.get(), "muted tap may be released after stopping is published")
-  }
-
   private static func safeCloseThenStdoutFailureDoesNotTerminate() {
     let coordinator = ParentLossCoordinator()
-    let terminated = Flag(false)
+    let terminated = Counter()
     coordinator.setHandler {
-      terminated.set(true)
+      terminated.increment()
     }
     coordinator.markCloseSafe()
     coordinator.handleUnexpectedParentEOF()
     precondition(
       !coordinator.isStopping(),
       "safe-close stdin EOF must leave capture running")
-    coordinator.notifyParentLost()
+    coordinator.handleOutputClosed()
     precondition(
-      !terminated.get(),
+      terminated.get() == 0,
       "safe-close must not terminate the carrier when stdout later fails")
     precondition(
       coordinator.isStopping(),
       "stdout failure after safe-close must still stop capture")
   }
+
 }

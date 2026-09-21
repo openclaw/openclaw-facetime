@@ -30,6 +30,13 @@ executable accepts only Apple-signed FaceTime, Phone, or `avconferenced`
 processes and captures the active call process. The OpenClaw plugin owns every
 higher-level policy and runtime decision.
 
+The Gateway owns capture shutdown: it sends the safe-close command and closes
+stdin before signaling the capture process. Unexpected control-stream EOF keeps
+the watchdog running until captured carriers are settled and the owner-handoff
+window remains quiet. Stdout loss or a termination signal alone does not authorize
+releasing suppression; the control stream determines whether to preserve the
+call or settle its carriers.
+
 This is an experimental private-API integration for a dedicated Apple Silicon
 Mac. It requires debugger attachment to protected Apple applications. Review
 the security tradeoff and recovery steps in the canonical OpenClaw docs before
