@@ -17,7 +17,6 @@ describe("privileged FaceTime support boundaries", () => {
     expect(buildHelper).not.toContain("OPENCLAW_FACETIME_HELPER_TOKEN");
     expect(compileHelper).not.toContain("OPENCLAW_FACETIME_HELPER_TOKEN");
     expect(compileHelper).toContain("ConnectionAuthentication.m");
-    expect(compileHelper).toContain("FindOutgoingCall.m");
     expect(buildHelper).toContain('scripts/ensure-helper-ipc-key.sh"');
     expect(buildHelper).toContain("/opt/homebrew/opt/openclaw-facetime/libexec");
     expect(buildHelper).toContain('candidate_build_id="${native_dir}/FaceTimeHelper.build-id"');

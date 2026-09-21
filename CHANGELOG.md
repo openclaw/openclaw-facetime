@@ -8,9 +8,13 @@ here. Published versions are listed in
 
 ### Fixed
 
-- Keep `find-outgoing-call` from hanging up a cellular or other
-  non-FaceTime call when outbound safety mute cannot apply. The lookup
-  now returns absent instead of disconnecting.
+- Keep outgoing-call lookup from muting, disconnecting, or adopting a non-FaceTime call while preserving owned-carrier reconciliation and explicit cancellation. Thanks @SebTardif. (#31)
+- Keep FaceTime capture alive during bounded audio backpressure by replacing
+  stale pending frames instead of treating ordinary queue saturation as a
+  fatal conversion failure.
+- Distinguish unknown or failed SIP status checks from enabled debugging
+  restrictions before helper injection. Unknown status now asks for manual
+  verification instead of recommending a security-policy change.
 - Dispatch the Homebrew updater with the tap-owned FaceTime profile alone,
   without the conflicting artifact override that prevented formula updates.
 - Bind release signing and verification to the validated commit, and recheck
