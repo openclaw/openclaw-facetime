@@ -10,6 +10,8 @@ here. Published versions are listed in
 
 - Retain audio suppression through stdin/stdout loss until captured and successor carriers are confirmed stopped; retry uncertain settlement and preserve explicit safe-close behavior. Thanks @SebTardif. (#32)
 - Bind capture shutdown signals to the captured process generation so PID reuse cannot target another process, and let queued safe-close commands take precedence over stdout failure. (#32)
+- Keep outgoing-call lookup from muting, disconnecting, or adopting a non-FaceTime call while preserving owned-carrier reconciliation and explicit cancellation. Thanks @SebTardif. (#31)
+- Reject malformed `set-muted` values before changing call audio; only JSON booleans may mute or unmute a call. Thanks @SebTardif. (#30)
 - Keep FaceTime capture alive during bounded audio backpressure by replacing
   stale pending frames instead of treating ordinary queue saturation as a
   fatal conversion failure.
