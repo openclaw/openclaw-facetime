@@ -52,10 +52,8 @@ using it.
 Vitest 5 does not support Node 25. These Node.js requirements apply to the
 development harness; the distributed native binaries do not require Node.js.
 
-The first signed release and Homebrew formula are still being prepared. Check
-[GitHub Releases](https://github.com/openclaw/openclaw-facetime/releases) and the
-[release handoff](FOUNDATION_RELEASE_HANDOFF.md) for availability. After that
-handoff completes, production installation uses the signed and notarized artifact:
+Signed and notarized native binaries are available through
+[GitHub Releases](https://github.com/openclaw/openclaw-facetime/releases) and Homebrew:
 
 ```sh
 brew install openclaw/tap/openclaw-facetime
@@ -129,7 +127,7 @@ validated on both sides.
 
 See [docs/RELEASING.md](docs/RELEASING.md) for the artifact contract and
 workflow, and [FOUNDATION_RELEASE_HANDOFF.md](FOUNDATION_RELEASE_HANDOFF.md) for
-the remaining organization-owned prerequisites.
+the organization-owned release prerequisites.
 
 The repository package is private and exists only to pin the local Vitest
 harness and native convenience commands. It is not an npm distribution and
