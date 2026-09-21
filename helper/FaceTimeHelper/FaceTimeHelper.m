@@ -677,7 +677,19 @@ FACETIMEHELPER *plugin;
             return;
         }
 
-        BOOL muted = [data[@"muted"] boolValue];
+        id mutedValue = data[@"muted"];
+        // JSON numbers also bridge to NSNumber; only CFBoolean authorizes a mute change.
+        if (![mutedValue isKindOfClass:[NSNumber class]] ||
+            CFGetTypeID((__bridge CFTypeRef)mutedValue) != CFBooleanGetTypeID()) {
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"error": @"muted must be a boolean",
+                }];
+            }
+            return;
+        }
+        BOOL muted = [mutedValue boolValue];
         if (!muted && !IsVerifiedFaceTimeCall(call)) {
             if (transaction != nil) {
                 [controller sendMessage: @{

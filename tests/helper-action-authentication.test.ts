@@ -52,6 +52,28 @@ describe("FaceTime helper native contracts", () => {
   );
 
   it(
+    "validates set-muted JSON before changing call or conversation audio",
+    { timeout: 20_000 },
+    () => {
+      const helper = readFileSync("helper/FaceTimeHelper/FaceTimeHelper.m", "utf8");
+      const action = helper.indexOf('} else if ([event isEqualToString:@"set-muted"]) {');
+      const start = helper.indexOf("\n", action) + 1;
+      const end = helper.indexOf(
+        '    } else if ([event isEqualToString:@"start-transmission"])',
+        start,
+      );
+      expect(action).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      // Compile the real dispatch branch against synthetic Apple calls so a
+      // missing guard fails on actual audio writes, without injecting a helper.
+      const fixture = readFileSync("helper/tests/SetMutedDispatchTests.m", "utf8");
+      runNativeCheck(
+        [],
+        fixture.replace("/* OPENCLAW_SET_MUTED_BODY */", helper.slice(start, end)),
+      );
+    },
+  );
+  it(
     "keeps outgoing lookup off non-FaceTime audio and retained ownership",
     { timeout: 20_000 },
     () => {
