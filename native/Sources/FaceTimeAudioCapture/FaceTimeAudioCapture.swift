@@ -22,6 +22,7 @@ private enum CaptureError: LocalizedError {
   case invalidAudioFormat
   case usageDescriptionMissing
   case conversionFailed(String)
+  case standardOutputClosed
 
   var errorDescription: String? {
     switch self {
@@ -51,6 +52,8 @@ private enum CaptureError: LocalizedError {
         "The capture helper is missing its embedded NSAudioCaptureUsageDescription. Restart OpenClaw to rebuild the FaceTime plugin artifact."
     case .conversionFailed(let message):
       return "Audio conversion failed: \(message)"
+    case .standardOutputClosed:
+      return "Capture stdout closed; waiting for the parent control stream."
     }
   }
 }
@@ -93,15 +96,6 @@ private struct Arguments {
     }
     return result
   }
-}
-
-private struct AudioProcess {
-  let bundleID: String
-  let name: String
-  let objectID: AudioObjectID
-  let pid: pid_t
-  let runningOutput: Bool
-  let trustedIdentity: String
 }
 
 private struct AudioDeviceDescription: Codable {
@@ -202,45 +196,63 @@ extension AudioObjectID {
   }
 }
 
-private func processName(pid: pid_t) -> String {
+private func processName(pid: pid_t, requireIdentity: Bool = false) throws -> String {
   var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
   let count = proc_name(pid, &buffer, UInt32(buffer.count))
-  guard count > 0 else { return "pid-\(pid)" }
+  guard count > 0 else {
+    if requireIdentity {
+      throw CaptureError.audioOwnerChanged("unreadable process identity for pid \(pid)")
+    }
+    return "pid-\(pid)"
+  }
   return String(cString: buffer)
 }
 
-private func isAppleSigned(pid: pid_t) -> Bool {
+private func isAppleSigned(pid: pid_t) throws -> Bool {
   let attributes = [kSecGuestAttributePid as String: Int(pid)] as CFDictionary
   var code: SecCode?
-  guard
-    SecCodeCopyGuestWithAttributes(nil, attributes, SecCSFlags(), &code) == errSecSuccess,
-    let code
-  else {
-    return false
+  let lookup = SecCodeCopyGuestWithAttributes(nil, attributes, SecCSFlags(), &code)
+  guard lookup == errSecSuccess, let code else {
+    throw CaptureError.coreAudio("Read audio process signing identity", lookup)
   }
   var requirement: SecRequirement?
-  guard
-    SecRequirementCreateWithString("anchor apple" as CFString, SecCSFlags(), &requirement)
-      == errSecSuccess,
-    let requirement,
-    SecCodeCheckValidity(code, SecCSFlags(), requirement) == errSecSuccess
-  else {
+  let created = SecRequirementCreateWithString(
+    "anchor apple" as CFString, SecCSFlags(), &requirement)
+  guard created == errSecSuccess, let requirement else {
+    throw CaptureError.coreAudio("Create Apple signing requirement", created)
+  }
+  let verified = SecCodeCheckValidity(code, SecCSFlags(), requirement)
+  if [errSecCSReqFailed, errSecCSUnsigned, errSecCSSignatureFailed].contains(verified) {
     return false
+  }
+  guard verified == errSecSuccess else {
+    throw CaptureError.coreAudio("Verify audio process signing identity", verified)
   }
   return true
 }
 
-private func readAudioProcesses() throws -> [AudioProcess] {
+private func readAudioProcesses(requireCompleteSnapshot: Bool = false) throws -> [AudioProcess] {
   try AudioObjectID.system.readProcessList().compactMap { objectID in
+    var processID: pid_t?
     do {
       let pid: pid_t = try objectID.read(kAudioProcessPropertyPID, defaultValue: -1)
+      processID = pid
+      let identity = try CapturedProcessIdentity.read(pid: pid)
       let running: UInt32 = try objectID.read(
         kAudioProcessPropertyIsRunningOutput,
         defaultValue: 0)
-      let bundleID = (try? objectID.readString(kAudioProcessPropertyBundleID)) ?? ""
-      let executableName = processName(pid: pid)
-      guard isAppleSigned(pid: pid) else {
+      let bundleID: String
+      if requireCompleteSnapshot {
+        bundleID = try objectID.readString(kAudioProcessPropertyBundleID)
+      } else {
+        bundleID = (try? objectID.readString(kAudioProcessPropertyBundleID)) ?? ""
+      }
+      let executableName = try processName(pid: pid, requireIdentity: requireCompleteSnapshot)
+      guard try isAppleSigned(pid: pid) else {
         return nil
+      }
+      guard try CapturedProcessIdentity.read(pid: pid) == identity else {
+        throw CaptureError.audioOwnerChanged("process generation changed during discovery")
       }
       let trustedIdentity =
         bundleID.isEmpty && executableName == "avconferenced"
@@ -252,10 +264,16 @@ private func readAudioProcesses() throws -> [AudioProcess] {
         bundleID: bundleID,
         name: name,
         objectID: objectID,
-        pid: pid,
+        identity: identity,
         runningOutput: running != 0,
         trustedIdentity: trustedIdentity)
     } catch {
+      if requireCompleteSnapshot {
+        if let pid = processID, pid > 0, Darwin.kill(pid, 0) != 0 && errno == ESRCH {
+          return nil
+        }
+        throw error
+      }
       return nil
     }
   }
@@ -325,7 +343,7 @@ private func requireExpectedActiveOwner(
   requestedNames: Set<String>
 ) throws {
   let current = try resolveActiveOwner(requestedNames: requestedNames)
-  guard current.pid == expected.pid, current.objectID == expected.objectID else {
+  guard current.hasSameIdentity(as: expected) else {
     throw CaptureError.audioOwnerChanged("\(current.name) pid=\(current.pid)")
   }
 }
@@ -344,16 +362,26 @@ private func selectActiveOwner(_ active: [AudioProcess]) -> AudioProcess? {
   return nil
 }
 
-private func resolveActiveOwner(requestedNames: Set<String>) throws -> AudioProcess {
-  let active = try readAudioProcesses().filter {
+private func discoverActiveOwner(
+  requestedNames: Set<String>,
+  requireCompleteSnapshot: Bool = false
+) throws -> AudioProcess? {
+  let active = try readAudioProcesses(requireCompleteSnapshot: requireCompleteSnapshot).filter {
     $0.runningOutput
       && requestedNames.contains($0.name.lowercased())
       && allowedSigningIdentifiers.contains($0.trustedIdentity)
   }
+  if active.isEmpty { return nil }
   guard let selected = selectActiveOwner(active) else {
-    let description = active.isEmpty
-      ? "none" : active.map { "\($0.name) pid=\($0.pid)" }.joined(separator: ", ")
+    let description = active.map { "\($0.name) pid=\($0.pid)" }.joined(separator: ", ")
     throw CaptureError.audioOwnerChanged(description)
+  }
+  return selected
+}
+
+private func resolveActiveOwner(requestedNames: Set<String>) throws -> AudioProcess {
+  guard let selected = try discoverActiveOwner(requestedNames: requestedNames) else {
+    throw CaptureError.audioOwnerChanged("none")
   }
   return selected
 }
@@ -566,15 +594,18 @@ private final class PCMWriter: @unchecked Sendable {
       return
     }
     let byteCount = Int(outputBuffer.frameLength) * MemoryLayout<Int16>.size
-    FileHandle.standardOutput.write(Data(bytes: samples, count: byteCount))
+    if !CaptureStandardOutput.write(Data(bytes: samples, count: byteCount), to: .standardOutput) {
+      throw CaptureError.standardOutputClosed
+    }
   }
 }
 
 private final class CaptureLifecycle: @unchecked Sendable {
   private let lock = NSLock()
   private let failureQueue = DispatchQueue(label: "ai.openclaw.facetime-capture-failure")
+  private let parentLoss = ParentLossCoordinator()
+  private var terminationSignals: [any DispatchSourceSignal] = []
   private var failure: Error?
-  private var stopping = false
   private lazy var captureOverflowSignal: DispatchSourceUserDataAdd = {
     let source = DispatchSource.makeUserDataAddSource(queue: self.failureQueue)
     source.setEventHandler { [weak self] in
@@ -586,6 +617,17 @@ private final class CaptureLifecycle: @unchecked Sendable {
 
   init() {
     _ = self.captureOverflowSignal
+    for signalNumber in [SIGINT, SIGTERM] {
+      signal(signalNumber, SIG_IGN)
+      let source = DispatchSource.makeSignalSource(signal: signalNumber, queue: .main)
+      source.setEventHandler { [weak self] in self?.requestStop() }
+      source.resume()
+      self.terminationSignals.append(source)
+    }
+  }
+
+  deinit {
+    for source in self.terminationSignals { source.cancel() }
   }
 
   func fail(_ error: Error) -> Bool {
@@ -601,15 +643,30 @@ private final class CaptureLifecycle: @unchecked Sendable {
   }
 
   func requestStop() {
-    self.lock.lock()
-    self.stopping = true
-    self.lock.unlock()
+    self.parentLoss.requestStop()
+  }
+
+  func setParentLostHandler(_ handler: @escaping @Sendable () -> Void) {
+    self.parentLoss.setHandler(handler)
+  }
+
+  func markCloseSafe() {
+    self.parentLoss.markCloseSafe()
+  }
+
+  func handleOutputClosed() {
+    self.parentLoss.handleOutputClosed()
+  }
+
+  func handleUnexpectedParentEOF() {
+    self.parentLoss.handleUnexpectedParentEOF()
   }
 
   func state() -> (failure: Error?, stopping: Bool) {
     self.lock.lock()
-    defer { self.lock.unlock() }
-    return (self.failure, self.stopping)
+    let failure = self.failure
+    self.lock.unlock()
+    return (failure, self.parentLoss.isStopping())
   }
 }
 
@@ -625,41 +682,33 @@ private func audioDevice(named expectedName: String) throws -> AudioDeviceID {
   return device
 }
 
-private final class CarrierOwnerRef: @unchecked Sendable {
-  private let lock = NSLock()
-  private var owner: AudioProcess
-
-  init(_ owner: AudioProcess) {
-    self.owner = owner
+private func settleCapturedCarrier(_ expected: AudioProcess) -> Bool {
+  func hasExited() -> Bool {
+    expected.identity.hasExited()
   }
-
-  func update(_ owner: AudioProcess) {
-    self.lock.lock()
-    self.owner = owner
-    self.lock.unlock()
-  }
-
-  func terminateIfCurrent(requestedNames: Set<String>) {
-    self.lock.lock()
-    let expected = self.owner
-    self.lock.unlock()
-    guard
-      let current = try? resolveActiveOwner(requestedNames: requestedNames),
-      current.pid == expected.pid,
-      current.objectID == expected.objectID,
-      current.trustedIdentity == expected.trustedIdentity
-    else {
-      return
+  func stillOwnsCapturedProcess() throws -> Bool {
+    try readAudioProcesses(requireCompleteSnapshot: true).contains {
+      $0.hasSameIdentity(as: expected)
     }
-    _ = Darwin.kill(current.pid, SIGTERM)
+  }
+  for signal in [SIGTERM, SIGKILL] {
+    if hasExited() { return true }
+    do {
+      // A complete snapshot can also prove the captured audio object retired
+      // while its UI process remains alive. Never signal that stale identity.
+      if try !stillOwnsCapturedProcess() { return true }
+    } catch {
+      return false
+    }
+    let result = expected.identity.sendSignal(signal)
+    if result == ESRCH { return true }
+    guard result == 0 else { return hasExited() }
     for _ in 0..<10 {
-      if Darwin.kill(current.pid, 0) != 0 {
-        return
-      }
+      if hasExited() { return true }
       usleep(50_000)
     }
-    _ = Darwin.kill(current.pid, SIGKILL)
   }
+  return hasExited()
 }
 
 private final class NativePlayback: @unchecked Sendable {
@@ -800,10 +849,15 @@ private final class NativePlayback: @unchecked Sendable {
 private final class ParentCommandReader: @unchecked Sendable {
   private let playback: NativePlayback?
   private let unexpectedEOF: () -> Void
-  private var closeSafe = false
+  private let markCloseSafe: () -> Void
 
-  init(playback: NativePlayback? = nil, unexpectedEOF: @escaping () -> Void) {
+  init(
+    playback: NativePlayback? = nil,
+    markCloseSafe: @escaping () -> Void = {},
+    unexpectedEOF: @escaping () -> Void
+  ) {
     self.playback = playback
+    self.markCloseSafe = markCloseSafe
     self.unexpectedEOF = unexpectedEOF
   }
 
@@ -813,9 +867,7 @@ private final class ParentCommandReader: @unchecked Sendable {
       while true {
         let chunk = FileHandle.standardInput.availableData
         if chunk.isEmpty {
-          if !self.closeSafe {
-            self.unexpectedEOF()
-          }
+          self.unexpectedEOF()
           return
         }
         buffered.append(chunk)
@@ -839,7 +891,7 @@ private final class ParentCommandReader: @unchecked Sendable {
             } else if type == 3 {
               self.playback?.clear(generation: generation)
             } else if type == 4 {
-              self.closeSafe = true
+              self.markCloseSafe()
             }
           }
         }
@@ -852,7 +904,7 @@ private final class ParentCommandReader: @unchecked Sendable {
   }
 }
 
-private final class ProcessTap: @unchecked Sendable {
+private final class ProcessTap: CarrierSuppressionTap, @unchecked Sendable {
   private var aggregateDeviceID = AudioObjectID(kAudioObjectUnknown)
   private var ioProcID: AudioDeviceIOProcID?
   private var tapID = AudioObjectID(kAudioObjectUnknown)
@@ -876,13 +928,23 @@ private final class ProcessTap: @unchecked Sendable {
     self.tapID = createdTapID
     fputs("facetime-audio-capture: created FaceTime process tap\n", stderr)
 
-    let streamDescription: AudioStreamBasicDescription = try createdTapID.read(
-      kAudioTapPropertyFormat,
-      defaultValue: AudioStreamBasicDescription())
-    self.writer = try PCMWriter(streamDescription: streamDescription) { [lifecycle] error in
+    do {
+      let streamDescription: AudioStreamBasicDescription = try createdTapID.read(
+        kAudioTapPropertyFormat,
+        defaultValue: AudioStreamBasicDescription())
+      self.writer = try PCMWriter(streamDescription: streamDescription) { [lifecycle] error in
       if lifecycle.fail(error) {
         fputs("facetime-audio-capture: fatal: \(error.localizedDescription)\n", stderr)
       }
+      if let captureError = error as? CaptureError, case .standardOutputClosed = captureError {
+        lifecycle.handleOutputClosed()
+      }
+      }
+    } catch {
+      // A throwing initializer has no initialized writer and cannot use stop().
+      // Retried emergency capture must not leak the tap allocated above.
+      _ = AudioHardwareDestroyProcessTap(createdTapID)
+      throw error
     }
 
     // Keep hardware subdevices out of this aggregate. A duplex headset would
@@ -954,44 +1016,34 @@ private final class ProcessTap: @unchecked Sendable {
   }
 }
 
+private func startProcessTap(
+  _ process: AudioProcess,
+  lifecycle: CaptureLifecycle
+) throws -> ProcessTap {
+  let tap = try ProcessTap(processObjectIDs: [process.objectID], lifecycle: lifecycle)
+  try tap.start()
+  return tap
+}
+
 private func waitForTerminationSignal(
   _ lifecycle: CaptureLifecycle,
   process: AudioProcess,
   requestedNames: Set<String>,
-  taps initialTaps: [ProcessTap],
-  ownerRef: CarrierOwnerRef
+  ownerRef: CaptureCarrierOwner
 ) async throws {
-  signal(SIGINT, SIG_IGN)
-  signal(SIGTERM, SIG_IGN)
-  let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-  let terminate = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-  interrupt.setEventHandler { lifecycle.requestStop() }
-  terminate.setEventHandler { lifecycle.requestStop() }
-  interrupt.resume()
-  terminate.resume()
-  defer {
-    interrupt.cancel()
-    terminate.cancel()
-  }
   var currentProcess = process
-  var taps = initialTaps
   var reportedFailure = false
-  defer {
-    for tap in taps {
-      tap.stop()
-    }
-  }
   var nextRouteCheck = ContinuousClock.now
   while true {
     let state = lifecycle.state()
-    if state.stopping {
+    if state.stopping && ownerRef.stopCaptures() {
       return
     }
     if let failure = state.failure, !reportedFailure {
       reportedFailure = true
       fputs("facetime-audio-capture: fatal-safety-retained: \(failure.localizedDescription)\n", stderr)
     }
-    if state.failure == nil && ContinuousClock.now >= nextRouteCheck {
+    if ContinuousClock.now >= nextRouteCheck {
       do {
         let activeProcess: AudioProcess
         do {
@@ -1003,59 +1055,59 @@ private func waitForTerminationSignal(
           activeProcess = try await waitForActiveOwner(
             requestedNames: requestedNames,
             processNames: requestedNames.sorted(),
-            timeout: .seconds(3))
+            timeout: carrierHandoffGracePeriod)
         }
-        if activeProcess.pid != currentProcess.pid
-          || activeProcess.objectID != currentProcess.objectID
-        {
+        if !activeProcess.hasSameIdentity(as: currentProcess) {
           // Start the replacement tap before releasing any prior tap so a
           // legitimate Apple audio-owner handoff has no audible gap.
-          let replacement = try ProcessTap(
-            processObjectIDs: [activeProcess.objectID], lifecycle: lifecycle)
-          try replacement.start()
-          taps.append(replacement)
-          try await waitForOpenClawRoutes(
-            activeProcess,
-            requestedNames: requestedNames,
-            phase: .steadyState)
-          // The new owner is fully routed before the prior muted tap is
-          // released, so handoff is gapless without retaining stale capture.
-          for obsoleteTap in taps.dropLast() {
-            obsoleteTap.stop()
+          try ownerRef.capture(activeProcess)
+          if state.failure != nil {
+            // A broken output pipe does not revoke suppression ownership while
+            // the ordered control stream still owns the close decision.
+            currentProcess = activeProcess
+          } else {
+            try await waitForOpenClawRoutes(
+              activeProcess,
+              requestedNames: requestedNames,
+              phase: .steadyState)
+            // The new owner is fully routed before the prior muted tap is
+            // released, so handoff is gapless without retaining stale capture.
+            if ownerRef.finishHandoff(activeProcess) {
+              currentProcess = activeProcess
+              fputs(
+                "facetime-audio-capture: rebound process tap to \(activeProcess.name) pid=\(activeProcess.pid)\n",
+                stderr)
+            }
           }
-          taps = [replacement]
-          currentProcess = activeProcess
-          ownerRef.update(activeProcess)
-          fputs(
-            "facetime-audio-capture: rebound process tap to \(activeProcess.name) pid=\(activeProcess.pid)\n",
-            stderr)
         }
-        let outputDecision = decideOpenClawOutputRoute(try outputRouteDevices(currentProcess))
-        switch outputDecision {
-        case .ready, .retry:
-          break
-        case .fail(let names):
-          throw CaptureError.outputRouteMismatch(
-            "\(currentProcess.name) pid=\(currentProcess.pid)", names)
-        }
-        let inputNames = (try? inputDeviceNames(currentProcess)) ?? []
-        let inputDecision = decideOpenClawInputRoute(inputNames, phase: .steadyState)
-        switch inputDecision {
-        case .ready:
-          break
-        case .retry:
-          break
-        case .fail(let names):
-          throw CaptureError.inputRouteMismatch(
-            "\(currentProcess.name) pid=\(currentProcess.pid)", names)
-        }
-        if inputDecision == .retry || outputDecision == .retry {
-          // Applying transmission state can briefly clear either process
-          // device list. Retain the muted tap while both expected routes return.
-          try await waitForOpenClawRoutes(
-            currentProcess,
-            requestedNames: requestedNames,
-            phase: .steadyState)
+        if state.failure == nil {
+          let outputDecision = decideOpenClawOutputRoute(try outputRouteDevices(currentProcess))
+          switch outputDecision {
+          case .ready, .retry:
+            break
+          case .fail(let names):
+            throw CaptureError.outputRouteMismatch(
+              "\(currentProcess.name) pid=\(currentProcess.pid)", names)
+          }
+          let inputNames = (try? inputDeviceNames(currentProcess)) ?? []
+          let inputDecision = decideOpenClawInputRoute(inputNames, phase: .steadyState)
+          switch inputDecision {
+          case .ready:
+            break
+          case .retry:
+            break
+          case .fail(let names):
+            throw CaptureError.inputRouteMismatch(
+              "\(currentProcess.name) pid=\(currentProcess.pid)", names)
+          }
+          if inputDecision == .retry || outputDecision == .retry {
+            // Applying transmission state can briefly clear either process
+            // device list. Retain the muted tap while both expected routes return.
+            try await waitForOpenClawRoutes(
+              currentProcess,
+              requestedNames: requestedNames,
+              phase: .steadyState)
+          }
         }
       } catch {
         if lifecycle.fail(error) {
@@ -1071,6 +1123,9 @@ private func waitForTerminationSignal(
 @main
 private struct FaceTimeAudioCapture {
   static func main() async {
+    // Gateway loss closes stdout as well as stdin. Keep the tap alive while
+    // the EOF watchdog confirms carrier termination instead of dying on SIGPIPE.
+    CaptureStandardOutput.ignoreBrokenPipeSignal()
     do {
       let arguments = try Arguments.parse(Array(CommandLine.arguments.dropFirst()))
       guard
@@ -1082,8 +1137,8 @@ private struct FaceTimeAudioCapture {
       }
       if arguments.listDefaultDevices {
         let data = try JSONEncoder().encode(readDefaultAudioDevices())
-        FileHandle.standardOutput.write(data)
-        FileHandle.standardOutput.write(Data("\n".utf8))
+        try FileHandle.standardOutput.write(contentsOf: data)
+        try FileHandle.standardOutput.write(contentsOf: Data("\n".utf8))
         return
       }
       let processes = try readAudioProcesses()
@@ -1101,56 +1156,62 @@ private struct FaceTimeAudioCapture {
         requestedNames.contains($0.name.lowercased())
           && allowedSigningIdentifiers.contains($0.trustedIdentity)
       }
-      let selected: [AudioProcess]
+      let selected: AudioProcess
       if arguments.checkOnly {
         let active = authorized.filter(\.runningOutput)
         if let activeOwner = selectActiveOwner(active) {
-          selected = [activeOwner]
+          selected = activeOwner
         } else if active.count > 1 {
           throw CaptureError.ambiguousAudioOwners(
             active.map { "\($0.name) pid=\($0.pid)" })
         } else if let idle = authorized.first {
-          selected = [idle]
+          selected = idle
         } else {
           throw CaptureError.audioProcessNotFound(arguments.processNames)
         }
       } else {
-        selected = [
-          try await waitForActiveOwner(
-            requestedNames: requestedNames,
-            processNames: arguments.processNames,
-            // The parent gives capture startup 10 seconds; leave room to
-            // construct and start the process tap after the owner settles.
-            timeout: .seconds(8))
-        ]
+        selected = try await waitForActiveOwner(
+          requestedNames: requestedNames,
+          processNames: arguments.processNames,
+          // The parent gives capture startup 10 seconds; leave room to
+          // construct and start the process tap after the owner settles.
+          timeout: .seconds(8))
       }
-      let selectedDescription = selected.map { "\($0.name) (pid \($0.pid))" }.joined(
-        separator: ", ")
+      let selectedDescription = "\(selected.name) (pid \(selected.pid))"
       let lifecycle = CaptureLifecycle()
-      let tap = try ProcessTap(
-        processObjectIDs: selected.map(\.objectID), lifecycle: lifecycle)
-      var taps = [tap]
-      defer {
-        for tap in taps {
-          tap.stop()
-        }
-      }
-      try tap.start()
       if arguments.checkOnly {
+        let tap = try startProcessTap(selected, lifecycle: lifecycle)
+        defer { tap.stop() }
         try await Task.sleep(for: .milliseconds(250))
         fputs(
           "facetime-audio-capture: ready; tapped audio owner(s): \(selectedDescription)\n",
           stderr)
         return
       }
-      var currentProcess = selected[0]
-      let ownerRef = CarrierOwnerRef(currentProcess)
+      var currentProcess = selected
+      let ownerRef = CaptureCarrierOwner(
+        discoverCurrent: {
+          try discoverActiveOwner(requestedNames: requestedNames, requireCompleteSnapshot: true)
+        },
+        startCapture: { try startProcessTap($0, lifecycle: lifecycle) },
+        settleCarrier: settleCapturedCarrier)
+      defer { ownerRef.stopCaptures() }
+      // The first PCM write can fail as soon as capture starts. Register its
+      // settlement handler before creating any tap.
+      lifecycle.setParentLostHandler {
+        while !ownerRef.shutdownStep() {
+          _ = lifecycle.fail(CaptureCarrierOwnerError.terminationUnconfirmed)
+          usleep(250_000)
+        }
+      }
+      try ownerRef.capture(currentProcess)
       // The OpenClaw host owns playback in a separate SoX process. Constructing
       // another AVAudioEngine here can rebind OpenClaw-Feed after FaceTime has
       // claimed the paired route and tear down the carrier.
-      let parentCommands = ParentCommandReader {
-        ownerRef.terminateIfCurrent(requestedNames: requestedNames)
-        lifecycle.requestStop()
+      let parentCommands = ParentCommandReader(
+        markCloseSafe: { lifecycle.markCloseSafe() }
+      ) {
+        lifecycle.handleUnexpectedParentEOF()
       }
       parentCommands.start()
       while true {
@@ -1159,24 +1220,15 @@ private struct FaceTimeAudioCapture {
             currentProcess,
             requestedNames: requestedNames,
             phase: .initialReadiness)
-          if taps.count > 1, let activeTap = taps.last {
-            for obsoleteTap in taps.dropLast() {
-              obsoleteTap.stop()
-            }
-            taps = [activeTap]
-          }
+          _ = ownerRef.finishHandoff(currentProcess)
           break
         } catch CaptureError.audioOwnerChanged {
           do {
             currentProcess = try await waitForActiveOwner(
               requestedNames: requestedNames,
               processNames: arguments.processNames,
-              timeout: .seconds(3))
-            ownerRef.update(currentProcess)
-            let replacement = try ProcessTap(
-              processObjectIDs: [currentProcess.objectID], lifecycle: lifecycle)
-            try replacement.start()
-            taps.append(replacement)
+              timeout: carrierHandoffGracePeriod)
+            try ownerRef.capture(currentProcess)
           } catch {
             if lifecycle.fail(error) {
               fputs(
@@ -1187,7 +1239,6 @@ private struct FaceTimeAudioCapture {
               lifecycle,
               process: currentProcess,
               requestedNames: requestedNames,
-              taps: taps,
               ownerRef: ownerRef)
             return
           }
@@ -1201,7 +1252,6 @@ private struct FaceTimeAudioCapture {
             lifecycle,
             process: currentProcess,
             requestedNames: requestedNames,
-            taps: taps,
             ownerRef: ownerRef)
           return
         }
@@ -1216,7 +1266,6 @@ private struct FaceTimeAudioCapture {
         lifecycle,
         process: currentProcess,
         requestedNames: requestedNames,
-        taps: taps,
         ownerRef: ownerRef)
     } catch {
       fputs("facetime-audio-capture: \(error.localizedDescription)\n", stderr)
