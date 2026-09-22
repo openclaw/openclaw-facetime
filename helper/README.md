@@ -36,3 +36,8 @@ If outbound acknowledgement raises after a call is safely muted, the reply
 retains the dial and carrier identity and marks the result ambiguous so the
 Gateway can reconcile it. The acknowledgement failure does not hang up that
 safely muted call.
+
+Reinjection transfers call-status polling and notification ownership to the
+replacement helper. Restart FaceTime or Phone once when upgrading an already
+injected helper from a version older than this ownership handoff; those images
+cannot cancel their existing timers.

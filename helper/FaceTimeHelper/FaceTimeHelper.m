@@ -240,13 +240,14 @@ static void ReleaseRetainedOutboundCall(TUCall *call) {
 
 @interface FACETIMEHELPER : NSObject
 + (instancetype)sharedInstance;
+- (void)openclaw_stopHelperPolling;
+- (void)startCallStatusPolling;
 @end
 
 FACETIMEHELPER *plugin;
 
 @implementation FACETIMEHELPER
 
-// FACETIMEHELPER is a singleton
 + (instancetype)sharedInstance {
     static FACETIMEHELPER *plugin = nil;
     @synchronized(self) {
@@ -257,15 +258,12 @@ FACETIMEHELPER *plugin;
     return plugin;
 }
 
-// Called when macforge initializes the plugin
 + (void)load {
-    // Create the singleton
     plugin = [FACETIMEHELPER sharedInstance];
     // Store ownership on a host object whose lifetime spans helper reinjection.
     // Static dictionaries alone would orphan provisional outbound calls.
     RestoreOutboundState();
 
-    // Get OS version for debugging purposes
     NSUInteger major = [[NSProcessInfo processInfo] operatingSystemVersion].majorVersion;
     NSUInteger minor = [[NSProcessInfo processInfo] operatingSystemVersion].minorVersion;
     DLog("FACETIMEHELPER: %{public}@ loaded into %{public}@ on macOS %ld.%ld", [self className], [[NSBundle mainBundle] bundleIdentifier], (long)major, (long)minor);
@@ -297,17 +295,37 @@ FACETIMEHELPER *plugin;
     }
 }
 
-// Private method to initialize all the things required by the plugin to communicate with the main
-// server over a tcp socket
+-(void)openclaw_stopHelperPolling {
+    objc_setAssociatedObject(self, @selector(pollCallStatuses), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [[NSNotificationCenter defaultCenter] removeObserver:self];
+}
+
+-(void)startCallStatusPolling {
+    if (![NSThread isMainThread]) {
+        dispatch_async(dispatch_get_main_queue(), ^{ [self startCallStatusPolling]; });
+        return;
+    }
+    TUCallCenter *owner = [TUCallCenter sharedInstance];
+    // Selector identity is shared across independently loaded helper images.
+    SEL key = @selector(openclaw_stopHelperPolling);
+    id previous = objc_getAssociatedObject(owner, key);
+    if (previous == self && objc_getAssociatedObject(self, @selector(pollCallStatuses)) != nil) {
+        return;
+    }
+    [previous openclaw_stopHelperPolling];
+    objc_setAssociatedObject(self, @selector(pollCallStatuses), [NSObject new], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(owner, key, self, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(callStatusChanged:) name:@"TUCallCenterVideoCallStatusChangedNotification" object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(callStatusChanged:) name:@"TUCallCenterCallStatusChangedNotification" object:nil];
+    [self pollCallStatuses];
+}
+
 -(void) initializeNetworkController {
-    // Get the network controller
     NetworkController *controller = [NetworkController sharedInstance];
     controller.messageReceivedBlock =  ^(NetworkController *controller, NSString *data) {
         [self handleMessage:controller message: data];
     };
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(callStatusChanged:) name:@"TUCallCenterVideoCallStatusChangedNotification" object:nil];
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(callStatusChanged:) name:@"TUCallCenterCallStatusChangedNotification" object:nil];
-    [self pollCallStatuses];
+    [self startCallStatusPolling];
     controller.connectionReadyBlock = ^(NetworkController *readyController) {
         NSString *bundleIdentifier = [[NSBundle mainBundle] bundleIdentifier] ?: @"";
         NSDictionary *hello = [ConnectionAuthenticator
@@ -469,6 +487,10 @@ FACETIMEHELPER *plugin;
 }
 
 -(void) pollCallStatuses {
+    id generation = objc_getAssociatedObject(self, @selector(pollCallStatuses));
+    if (generation == nil) {
+        return;
+    }
     NSMutableDictionary *callsByUUID = [NSMutableDictionary dictionary];
     for (id call in AllKnownCalls()) {
         if ([call respondsToSelector:@selector(callUUID)] && [call callUUID] != nil) {
@@ -479,7 +501,10 @@ FACETIMEHELPER *plugin;
         [self emitCallStatus:callsByUUID[callUUID]];
     }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^(void){
-        [self pollCallStatuses];
+        // Restarting this instance must not revive a replaced callback.
+        if (objc_getAssociatedObject(self, @selector(pollCallStatuses)) == generation) {
+            [self pollCallStatuses];
+        }
     });
 }
 
@@ -496,7 +521,6 @@ FACETIMEHELPER *plugin;
     }
 }
 
-// Run when receiving a new message from the tcp socket
 -(void) handleMessage: (NetworkController*)controller  message:(NSString *)message {
     NSError *error;
     NSData *jsonData = [message dataUsingEncoding:NSUTF8StringEncoding];

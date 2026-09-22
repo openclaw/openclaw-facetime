@@ -16,6 +16,8 @@ here. Published versions are listed in
 
 - Return an ambiguous transaction error with the retained carrier identity when outbound acknowledgement raises, so the Gateway can reconcile a live muted call. Thanks @SebTardif. (#46)
 
+- Transfer FaceTime polling and call-status observer ownership across helper reinjection, using a process-wide key and idempotent initialization. Restart the call app once when upgrading an already injected older helper. Thanks @SebTardif. (#47)
+
 ## 0.1.2 - 2026-09-21
 
 ### Fixed

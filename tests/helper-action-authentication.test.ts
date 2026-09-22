@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-function runNativeCheck(sources: string[], generatedSource?: string) {
+function runNativeCheck(sources: string[], generatedSource?: string, helperImages = false) {
   const outputDir = mkdtempSync(path.join(tmpdir(), "facetime-helper-check."));
   const binary = path.join(outputDir, "native-check");
   try {
@@ -12,6 +12,18 @@ function runNativeCheck(sources: string[], generatedSource?: string) {
       const source = path.join(outputDir, "dispatch-check.m");
       writeFileSync(source, generatedSource);
       sources = [...sources, source];
+    }
+    const images: string[] = [];
+    if (helperImages) {
+      for (const name of ["A", "B"]) {
+        const image = path.join(outputDir, `helper-${name}.dylib`);
+        execFileSync("/usr/bin/clang", [
+          "-fobjc-arc", "-framework", "Foundation", "-dynamiclib",
+          "-undefined", "dynamic_lookup", "-DHELPER_IMAGE", `-DHelper=Helper${name}`,
+          ...sources, "-o", image,
+        ]);
+        images.push(image);
+      }
     }
     execFileSync("/usr/bin/clang", [
       "-fobjc-arc",
@@ -23,17 +35,9 @@ function runNativeCheck(sources: string[], generatedSource?: string) {
       "-o",
       binary,
     ]);
-    expect(() => execFileSync(binary)).not.toThrow();
+    expect(() => execFileSync(binary, images)).not.toThrow();
   } finally {
-    if (existsSync("/usr/bin/trash")) {
-      execFileSync("/usr/bin/trash", [outputDir]);
-    } else {
-      execFileSync("/usr/bin/python3", [
-        "-c",
-        "import shutil, sys; shutil.rmtree(sys.argv[1])",
-        outputDir,
-      ]);
-    }
+    rmSync(outputDir, { recursive: true, force: true });
   }
 }
 
@@ -159,6 +163,30 @@ describe("FaceTime helper native contracts", () => {
       runNativeCheck(
         [],
         fixture.replace("/* OPENCLAW_UNKNOWN_ACTION_ELSE */", helper.slice(elseBodyStart, elseEnd)),
+      );
+    },
+  );  it(
+    "stops the previous helper poll owner on reinjection",
+    { timeout: 20_000 },
+    () => {
+      const helper = readFileSync("helper/FaceTimeHelper/FaceTimeHelper.m", "utf8");
+      const start = helper.indexOf("-(void)openclaw_stopHelperPolling {");
+      const end = helper.indexOf("\n-(void) initializeNetworkController {", start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const fixture = readFileSync("helper/tests/HelperPollOwnerTests.m", "utf8");
+      runNativeCheck(
+        [],
+        fixture
+          .replace("/* OPENCLAW_POLL_LIFECYCLE */", helper.slice(start, end))
+          .replace(
+            "/* OPENCLAW_POLL_METHOD */",
+            helper.slice(
+              helper.indexOf("-(void) pollCallStatuses {"),
+              helper.indexOf("-(void) callStatusChanged:"),
+            ),
+          ),
+        true,
       );
     },
   );
