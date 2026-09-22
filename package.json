@@ -40,10 +40,10 @@
     "test": "vitest run tests"
   },
   "devDependencies": {
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.1"
   },
   "engines": {
     "node": ">=22.22.3 <23 || >=24.15.0 <25 || >=26.0.0"
   },
-  "packageManager": "pnpm@11.24.0"
+  "packageManager": "pnpm@11.27.0"
 }
