@@ -97,7 +97,9 @@ Developer ID signature. Do not dispatch `v0.1.0` to the tap. The corrected
 formula preserves the signed helper through Homebrew's relocation pass and the
 first Homebrew-distributed release is `v0.1.1`.
 
-Use this exact recovery sequence:
+The initial `v0.1.1` Homebrew bootstrap used the recovery sequence below.
+That bootstrap is complete. For subsequent releases, follow
+[docs/RELEASING.md](docs/RELEASING.md) with the current `version.env` version.
 
 1. Merge the native release and protocol changes with green CI.
 2. Confirm the native repository is public, add all six secrets, and enable the
