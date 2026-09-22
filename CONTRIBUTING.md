@@ -8,7 +8,7 @@ and runtime-lifecycle changes there.
 ## Development setup
 
 You need an Apple Silicon Mac, full Xcode, a supported Node.js version from
-`package.json`, and pnpm 11.24.0 through Corepack.
+`package.json`, and pnpm 11.27.0 through Corepack.
 
 The Vitest 5 development harness supports Node.js 22.22.3+ within Node 22,
 24.15.0+ within Node 24, and 26+. Node 25 is no longer supported for repository
