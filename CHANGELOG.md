@@ -6,17 +6,17 @@ here. Published versions are listed in
 
 ## Unreleased
 
+## 0.1.3 - 2026-09-22
+
+**Highlights:** Harden helper JSON validation, preserve outbound-call reconciliation, and prevent stuck injection and duplicate polling.
+
 ### Fixed
 
 - Reject non-string `callUUID` values on authenticated call-control actions before asking TelephonyUtilities for a call, so JSON null cannot crash FaceTime. Handshake and envelope string fields are class-checked the same way before `isEqualToString:`. Thanks @SebTardif. (#43)
-
-- Bound the injector wait by terminating an LLDB process that ignores SIGTERM after the attach deadline. Thanks @SebTardif. (#44)
-
-- Reply with a transaction error when an authenticated helper action is unknown, instead of leaving the plugin waiting. Thanks @SebTardif. (#45)
-
 - Return an ambiguous transaction error with the retained carrier identity when outbound acknowledgement raises, so the Gateway can reconcile a live muted call. Thanks @SebTardif. (#46)
-
 - Transfer FaceTime polling and call-status observer ownership across helper reinjection, using a process-wide key and idempotent initialization. Restart the call app once when upgrading an already injected older helper. Thanks @SebTardif. (#47)
+- Bound the injector wait by terminating an LLDB process that ignores SIGTERM after the attach deadline. Thanks @SebTardif. (#44)
+- Reply with a transaction error when an authenticated helper action is unknown, instead of leaving the plugin waiting. Thanks @SebTardif. (#45)
 
 ## 0.1.2 - 2026-09-21
 
