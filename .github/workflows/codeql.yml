@@ -50,7 +50,6 @@ jobs:
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
-      # Objective-C is unsupported by CodeQL; helper proof remains in native CI.
       - name: Build Swift capture executable
         if: matrix.language == 'swift'
         run: swift build --package-path native -c release

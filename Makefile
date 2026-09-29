@@ -9,7 +9,7 @@ help:
 		"make native-verify  - verify the archive at NATIVE_ARCHIVE or bin/openclaw-facetime-macos-arm64.zip"
 
 native-archive:
-	FACETIME_HELPER_CONFIGURATION=release scripts/build-native-release.sh
+	scripts/build-native-release.sh
 
 native-sign:
 	scripts/sign-and-notarize.sh

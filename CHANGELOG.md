@@ -6,6 +6,13 @@ here. Published versions are listed in
 
 ## Unreleased
 
+### Changed
+
+- Replace the injected FaceTime/Phone call-control helper with a capture-only
+  native release. The archive and Homebrew formula now ship only the signed
+  out-of-process capture executable and metadata; normal users no longer need
+  SIP changes, debugger access, Xcode, or a reboot.
+
 ## 0.1.3 - 2026-09-22
 
 **Highlights:** Harden helper JSON validation, preserve outbound-call reconciliation, and prevent stuck injection and duplicate polling.

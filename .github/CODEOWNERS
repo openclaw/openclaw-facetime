@@ -11,11 +11,8 @@
 /THIRD_PARTY_NOTICES.md @openclaw/openclaw-secops
 /FOUNDATION_RELEASE_HANDOFF.md @openclaw/openclaw-secops
 /docs/RELEASING.md @openclaw/openclaw-secops
-/helper/ @openclaw/openclaw-secops
 /scripts/ @openclaw/openclaw-secops
 /packaging/ @openclaw/openclaw-secops
-/helper-endpoint.json @openclaw/openclaw-secops
-/native-protocol.env @openclaw/openclaw-secops
 /version.env @openclaw/openclaw-secops
 /package.json @openclaw/openclaw-secops
 /pnpm-lock.yaml @openclaw/openclaw-secops

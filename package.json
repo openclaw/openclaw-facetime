@@ -6,7 +6,7 @@
   "keywords": [
     "facetime",
     "macos",
-    "native-helper",
+    "audio-capture",
     "openclaw"
   ],
   "homepage": "https://github.com/openclaw/openclaw-facetime#readme",
@@ -29,14 +29,9 @@
   "scripts": {
     "build:capture": "bash scripts/build-capture.sh",
     "build:driver": "bash scripts/build-driver.sh",
-    "build:helper:macabi": "bash scripts/build-helper-macabi.sh",
     "build:native-release": "bash scripts/build-native-release.sh",
-    "setup:helper-key": "bash scripts/ensure-helper-ipc-key.sh",
     "verify:native-release": "bash scripts/verify-native-release.sh bin/openclaw-facetime-macos-arm64.zip",
     "install:driver": "bash scripts/install-driver.sh",
-    "inject:helper": "bash scripts/inject-helper.sh",
-    "inject:helper:phone": "bash scripts/inject-helper.sh --app Phone",
-    "inject:helper:terminal": "bash scripts/inject-helper-terminal.sh",
     "test": "vitest run tests"
   },
   "devDependencies": {

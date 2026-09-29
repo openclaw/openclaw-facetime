@@ -1,71 +1,38 @@
-# OpenClaw FaceTime native components
+# OpenClaw FaceTime native capture
 
-[![CI](https://github.com/openclaw/openclaw-facetime/actions/workflows/ci.yml/badge.svg)](https://github.com/openclaw/openclaw-facetime/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/openclaw/openclaw-facetime/actions/workflows/codeql.yml/badge.svg)](https://github.com/openclaw/openclaw-facetime/actions/workflows/codeql.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+This repository owns the signed, notarized, out-of-process audio capture binary
+used by the FaceTime plugin in `openclaw/openclaw`.
 
-This repository owns the native binaries, build scripts, signing, notarization,
-and Homebrew release contract used by the FaceTime plugin in
-[`openclaw/openclaw`](https://github.com/openclaw/openclaw).
+## Supported architecture
 
-The TypeScript plugin, configuration, tools, skills, runtime lifecycle, and user
-documentation live in the OpenClaw repository. Start with the canonical
-[FaceTime plugin guide](https://docs.openclaw.ai/plugins/facetime) and
-[recovery guide](https://docs.openclaw.ai/plugins/facetime-recovery).
+The package does not inject into FaceTime or Phone and contains no private-API
+call-control dylib. Apple platform binaries reject third-party mapped code under
+library validation, so debugger-based injection is not a supported user path.
+Normal installation requires no SIP change, Developer Tools access, Xcode, or
+reboot.
 
-## Native boundary
+`facetime-audio-capture` accepts only Apple-signed FaceTime, Phone, or
+`avconferenced` processes, requires exactly one active carrier owner, verifies
+the `OpenClaw-Mic` route, and streams 24 kHz PCM while suppressing duplicate
+local output. The OpenClaw plugin owns operator authorization, realtime media,
+video, and lifecycle policy.
 
-The release archive contains exactly seven files:
+## Release archive
 
-- `facetime-audio-capture`, an arm64 Core Audio process-tap executable
-- `FaceTimeHelper.dylib`, an arm64e + arm64 Mac Catalyst injected helper
-- `FaceTimeHelper.build-id`, which binds the helper source and endpoint contract
-- `native-protocol.env`, the plugin/native compatibility version
+The archive contains exactly four files:
+
+- `facetime-audio-capture`
 - `VERSION`
 - `LICENSE`
 - `THIRD_PARTY_NOTICES.md`
 
-The injected helper owns native FaceTime and Phone call control. The capture
-executable accepts only Apple-signed FaceTime, Phone, or `avconferenced`
-processes and captures the active call process. The OpenClaw plugin owns every
-higher-level policy and runtime decision.
-
-The Gateway owns capture shutdown: it sends the safe-close command and closes
-stdin before signaling the capture process. Unexpected control-stream EOF keeps
-the watchdog running until captured carriers are settled and the owner-handoff
-window remains quiet. Stdout loss or a termination signal alone does not authorize
-releasing suppression; the control stream determines whether to preserve the
-call or settle its carriers.
-
-This is an experimental private-API integration for a dedicated Apple Silicon
-Mac. It requires debugger attachment to protected Apple applications. Review
-the security tradeoff and recovery steps in the canonical OpenClaw docs before
-using it.
-
-## Requirements
-
-- Apple Silicon and macOS 14.4 or later
-- full Xcode, normally at `/Applications/Xcode.app`
-- Node.js 22.22.3+ within Node 22, 24.15.0+ within Node 24, or 26+;
-  and pnpm 11.27.0, for this repository's development harness
-
-Vitest 5 does not support Node 25. These Node.js requirements apply to the
-development harness; the distributed native binaries do not require Node.js.
-
-Signed and notarized native binaries are available through
-[GitHub Releases](https://github.com/openclaw/openclaw-facetime/releases) and Homebrew:
+Install through Homebrew; the formula also installs SoX:
 
 ```sh
 brew install openclaw/tap/openclaw-facetime
 ```
 
-The formula also installs SoX for the OpenClaw host's separate playback process.
-Install and configure the plugin separately by following the canonical FaceTime
-plugin guide.
-
-## Build and verify
-
-Review the source, then run:
+## Development
 
 ```sh
 corepack enable
@@ -77,78 +44,7 @@ make native-archive
 make native-verify
 ```
 
-`make native-archive` produces an ad-hoc-signed local archive at
-`bin/openclaw-facetime-macos-arm64.zip`. It is for development verification and
-must not be published. Foundation releases use Developer ID signing and Apple
-notarization through the release workflow.
+The paired `OpenClaw-Feed`/`OpenClaw-Mic` Core Audio driver remains a separately
+built GPL-3.0 artifact and is intentionally excluded from the release archive.
 
-Useful focused build commands:
-
-```sh
-pnpm build:capture
-pnpm build:helper:macabi
-pnpm inject:helper
-pnpm inject:helper:phone
-```
-
-The injector forcibly terminates an unresponsive debugger after its attach
-deadline instead of waiting indefinitely.
-
-The injection commands are development tools. They require the manual SIP and
-Developer Tools preparation documented in the recovery guide. They never
-change SIP, TCC, or developer-tools policy themselves.
-
-## Paired audio driver
-
-The native build scripts can create the paired `OpenClaw-Feed` and
-`OpenClaw-Mic` Core Audio driver from pinned BlackHole source:
-
-```sh
-pnpm build:driver
-pnpm install:driver
-```
-
-The generated driver is a separate modified GPL-3.0 artifact. It is ignored by
-Git and intentionally excluded from this repository's release archive and
-Homebrew formula.
-
-## Shared native contracts
-
-Two small files intentionally mirror contracts consumed by the canonical
-plugin:
-
-- `helper-endpoint.json` is a build input for the injected helper. Its hash is
-  part of `FaceTimeHelper.build-id`.
-- `native-protocol.env` is included in every release archive. The plugin checks
-  it before using installed helpers.
-
-These are native protocol fixtures, not alternate plugin configuration. Any
-change must be coordinated with the FaceTime plugin in `openclaw/openclaw` and
-validated on both sides.
-
-## Release
-
-See [docs/RELEASING.md](docs/RELEASING.md) for the artifact contract and
-workflow, and [FOUNDATION_RELEASE_HANDOFF.md](FOUNDATION_RELEASE_HANDOFF.md) for
-the organization-owned release prerequisites.
-
-The repository package is private and exists only to pin the local Vitest
-harness and native convenience commands. It is not an npm distribution and
-does not register an OpenClaw plugin.
-
-## Contributing and security
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, validation, and the native
-ownership boundary, and [CHANGELOG.md](CHANGELOG.md) for changes. Report native
-defects through the [issue templates](https://github.com/openclaw/openclaw-facetime/issues/new/choose).
-Report vulnerabilities privately using [SECURITY.md](SECURITY.md).
-
-CI validates workflows, tests the harness and native checks, and builds and
-verifies the native archive. CodeQL scans Swift, TypeScript, Ruby, and Actions;
-it does not analyze the Objective-C helper.
-
-## License
-
-Repository-owned source is available under the [MIT License](LICENSE).
-Incorporated and adapted helper source retains the upstream terms recorded in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+See [docs/RELEASING.md](docs/RELEASING.md) for the signed release contract.

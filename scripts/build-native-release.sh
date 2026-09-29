@@ -75,20 +75,11 @@ else
     "${dist_dir}/facetime-audio-capture"
 fi
 
-FACETIME_HELPER_CONFIGURATION=release \
-  CODESIGN_IDENTITY="${codesign_identity}" \
-  "${repo_root}/scripts/compile-helper-macabi.sh" \
-  "${dist_dir}/FaceTimeHelper.dylib"
-/bin/mv "${dist_dir}/FaceTimeHelper.dylib.build-id" \
-  "${dist_dir}/FaceTimeHelper.build-id"
-
 printf '%s\n' "${version}" > "${dist_dir}/VERSION"
-/usr/bin/ditto "${repo_root}/native-protocol.env" "${dist_dir}/native-protocol.env"
 /usr/bin/ditto "${repo_root}/LICENSE" "${dist_dir}/LICENSE"
 /usr/bin/ditto "${repo_root}/THIRD_PARTY_NOTICES.md" "${dist_dir}/THIRD_PARTY_NOTICES.md"
 
 /usr/bin/codesign --verify --strict --verbose=2 "${dist_dir}/facetime-audio-capture"
-/usr/bin/codesign --verify --strict --verbose=2 "${dist_dir}/FaceTimeHelper.dylib"
 
 mkdir -p "${output_dir}"
 (
