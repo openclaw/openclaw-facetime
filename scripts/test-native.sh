@@ -10,6 +10,21 @@ cleanup() {
 trap cleanup EXIT
 
 swiftc \
+  "$repo_root/native/Sources/FaceTimeAudioCapture/HelperBackendSelection.swift" \
+  "$repo_root/native/Checks/HelperBackendSelectionChecks.swift" \
+  -o "$build_dir/helper-backend-selection-checks"
+
+swiftc \
+  "$repo_root/native/Sources/FaceTimeAudioCapture/HelperBackendSelection.swift" \
+  "$repo_root/native/Sources/FaceTimeAudioCapture/HelperBackendRuntime.swift" \
+  "$repo_root/native/Checks/HelperBackendRuntimeChecks.swift" \
+  -o "$build_dir/helper-backend-runtime-checks"
+
+"$build_dir/helper-backend-runtime-checks"
+
+"$build_dir/helper-backend-selection-checks"
+
+swiftc \
   "$repo_root/native/Sources/FaceTimeAudioCapture/InputRouteReadiness.swift" \
   "$repo_root/native/Checks/InputRouteReadinessChecks.swift" \
   -o "$build_dir/input-route-readiness-checks"

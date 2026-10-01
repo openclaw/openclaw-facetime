@@ -41,3 +41,9 @@ Reinjection transfers call-status polling and notification ownership to the
 replacement helper. Restart FaceTime or Phone once when upgrading an already
 injected helper from a version older than this ownership handoff; those images
 cannot cancel their existing timers.
+
+The helper remains shipped alongside out-of-process capture. The native
+[`--select-backend` setup operation](../docs/BACKENDS.md) selects it only after
+current SIP/Developer Tools checks and successful loader initialization; AMFI
+or library-validation rejection selects capture. A successful load still
+requires the existing authenticated Gateway handshake before call control.
