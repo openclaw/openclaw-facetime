@@ -1127,7 +1127,21 @@ private struct FaceTimeAudioCapture {
     // the EOF watchdog confirms carrier termination instead of dying on SIGPIPE.
     CaptureStandardOutput.ignoreBrokenPipeSignal()
     do {
-      let arguments = try Arguments.parse(Array(CommandLine.arguments.dropFirst()))
+      let raw = Array(CommandLine.arguments.dropFirst())
+      if raw.first == "--select-backend" {
+        guard raw.count == 1 || (raw.count == 3 && raw[1] == "--app"
+          && ["FaceTime", "Phone"].contains(raw[2])) else {
+          fputs("Usage: facetime-audio-capture --select-backend [--app FaceTime|Phone]\n", stderr)
+          exit(2)
+        }
+        let selection = selectHelperBackend(
+          app: raw.count == 3 ? raw[2] : "FaceTime",
+          executable: Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0]))
+        try FileHandle.standardOutput.write(contentsOf: JSONEncoder().encode(selection))
+        try FileHandle.standardOutput.write(contentsOf: Data("\n".utf8))
+        return
+      }
+      let arguments = try Arguments.parse(raw)
       guard
         let usageDescription = Bundle.main.object(
           forInfoDictionaryKey: "NSAudioCaptureUsageDescription") as? String,

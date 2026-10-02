@@ -32,13 +32,20 @@ esac
 
 sip_debugging=unknown
 if sip_status="$(/usr/bin/csrutil status 2>/dev/null)"; then
-  if printf '%s\n' "$sip_status" | grep -Eq \
-    '^[[:space:]]*(System Integrity Protection status|Debugging Restrictions):[[:space:]]*disabled\.?[[:space:]]*$'; then
-    sip_debugging=disabled
-  elif printf '%s\n' "$sip_status" | grep -Eq \
-    '^[[:space:]]*(System Integrity Protection status|Debugging Restrictions):[[:space:]]*enabled\.?[[:space:]]*$'; then
-    sip_debugging=enabled
-  fi
+  # A custom per-feature result takes precedence over the summary. Reject
+  # conflicting or malformed status instead of finding any permissive line.
+  sip_debugging="$(printf '%s\n' "$sip_status" | awk '
+    { sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") }
+    /^Debugging Restrictions:/ { debug_count++; debug=$0 }
+    /^System Integrity Protection status:/ { overall_count++; overall=$0 }
+    END {
+      if (debug_count == 1 && debug == "Debugging Restrictions: disabled") print "disabled"
+      else if (debug_count == 1 && debug == "Debugging Restrictions: enabled") print "enabled"
+      else if (debug_count) print "unknown"
+      else if (overall_count == 1 && overall == "System Integrity Protection status: disabled.") print "disabled"
+      else if (overall_count == 1 && overall == "System Integrity Protection status: enabled.") print "enabled"
+      else print "unknown"
+    }')"
 fi
 
 if [[ "$sip_debugging" == unknown ]]; then
@@ -60,14 +67,14 @@ if [[ "$sip_debugging" == enabled ]]; then
 System Integrity Protection debugging restrictions are enabled.
 
 This helper uses LLDB to load into Apple's protected FaceTime and Phone apps.
-Apple's SIP runtime protections reject that attach even for root. Disable SIP
-debugging restrictions from macOS Recovery, reboot, and rerun facetime.setup
-before injecting:
+Apple's SIP runtime protections reject that attach even for root. Use the native
+runtime selector to choose the out-of-process path with the current policy:
 
-  csrutil enable --without debug
+  facetime-audio-capture --select-backend
 
-This preserves the other SIP protections, but allowing debugger attachment
-still reduces macOS security. This plugin never changes SIP itself.
+SIP status alone does not prove AMFI/library-validation eligibility. The native
+selector confirms helper initialization before selecting injection; otherwise it
+returns out-of-process capture. Neither command changes security settings.
 
 EOF
   exit 1

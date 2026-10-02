@@ -6,6 +6,14 @@ here. Published versions are listed in
 
 ## Unreleased
 
+### Added
+
+- Select the native backend at runtime with `facetime-audio-capture --select-backend`: retain the injected helper where current security policy and actual initialization permit it, otherwise select out-of-process capture without changing system security settings. Both native artifacts remain shipped. Thanks @RomneyDa. (#50)
+
+### Fixed
+
+- Respect explicit SIP debugging restrictions and reject contradictory status output before attempting manual helper injection.
+
 ## 0.1.3 - 2026-09-22
 
 **Highlights:** Harden helper JSON validation, preserve outbound-call reconciliation, and prevent stuck injection and duplicate polling.

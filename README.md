@@ -38,9 +38,12 @@ releasing suppression; the control stream determines whether to preserve the
 call or settle its carriers.
 
 This is an experimental private-API integration for a dedicated Apple Silicon
-Mac. It requires debugger attachment to protected Apple applications. Review
-the security tradeoff and recovery steps in the canonical OpenClaw docs before
-using it.
+Mac. The injected call-control backend requires debugger attachment to protected
+Apple applications; the out-of-process capture backend does not. The native
+[runtime selector](docs/BACKENDS.md) checks current security policy and confirms
+helper initialization before choosing injection. Unsupported or unknown states
+select capture without changing the Mac's security settings. The canonical
+OpenClaw plugin owns caller admission and must consume that selection.
 
 ## Requirements
 
@@ -94,9 +97,11 @@ pnpm inject:helper:phone
 The injector forcibly terminates an unresponsive debugger after its attach
 deadline instead of waiting indefinitely.
 
-The injection commands are development tools. They require the manual SIP and
-Developer Tools preparation documented in the recovery guide. They never
-change SIP, TCC, or developer-tools policy themselves.
+The injection commands are development tools and require existing debugger and
+loader authorization. Full SIP disablement alone does not establish library
+validation compatibility. Use `facetime-audio-capture --select-backend` for the
+native setup operation and read [backend requirements and host integration](docs/BACKENDS.md).
+These commands never change SIP, TCC, or Developer Tools policy themselves.
 
 ## Paired audio driver
 
