@@ -34,6 +34,24 @@ describe("FaceTime helper injection", () => {
       state: "blocked",
     },
     {
+      name: "explicit debug restriction overrides disabled summary",
+      output: "System Integrity Protection status: disabled.\nDebugging Restrictions: enabled",
+      code: 0,
+      state: "blocked",
+    },
+    {
+      name: "contradictory summary",
+      output: "System Integrity Protection status: disabled.\nSystem Integrity Protection status: enabled.",
+      code: 0,
+      state: "unknown",
+    },
+    {
+      name: "malformed debug restriction overrides disabled summary",
+      output: "System Integrity Protection status: disabled.\nDebugging Restrictions: unknown",
+      code: 0,
+      state: "unknown",
+    },
+    {
       name: "unknown",
       output: "System Integrity Protection status: unknown",
       code: 0,
@@ -94,7 +112,7 @@ describe("FaceTime helper injection", () => {
       expect(result.stderr).not.toContain("Developer Tools mode");
     } else if (state === "blocked") {
       expect(result.stderr).toContain("restrictions are enabled");
-      expect(result.stderr).toContain("csrutil enable --without debug");
+      expect(result.stderr).toContain("facetime-audio-capture --select-backend");
       expect(result.stderr).not.toContain("Developer Tools mode");
     } else {
       expect(result.stderr).toContain("Developer Tools mode is disabled");
