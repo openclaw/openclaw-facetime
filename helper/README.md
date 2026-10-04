@@ -47,3 +47,13 @@ The helper remains shipped alongside out-of-process capture. The native
 current SIP/Developer Tools checks and successful loader initialization; AMFI
 or library-validation rejection selects capture. A successful load still
 requires the existing authenticated Gateway handshake before call control.
+
+Answer requests are idempotent only for the exact verified FaceTime call that is
+already active, has no end date, and retains both mute flags. A duplicate proxy
+acknowledges that postcondition without answering again or changing audio.
+
+Call inspection reports `absent` when no live carrier remains across the supplied
+aliases. Apple may retain ended call objects; only their `dateEnded` evidence
+permits this classification. `has_ended` and `ended_call_count` report retained
+terminal evidence. A live replacement or unknown status without an end date
+remains `present`, regardless of alias ordering.

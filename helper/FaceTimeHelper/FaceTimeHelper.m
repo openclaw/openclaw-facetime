@@ -586,12 +586,6 @@ FACETIMEHELPER *plugin;
             }
             return;
         }
-        if ([call callStatus] != 4) {
-            if (transaction != nil) {
-                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Call is not waiting to be answered!"}];
-            }
-            return;
-        }
         if (!IsVerifiedFaceTimeCall(call)) {
             if (transaction != nil) {
                 [controller sendMessage: @{
@@ -599,6 +593,34 @@ FACETIMEHELPER *plugin;
                     @"error": @"Call transport is not verified FaceTime",
                     @"transport": CallTransportEvidence(call),
                 }];
+            }
+            return;
+        }
+
+        if ([call dateEnded] != nil) {
+            if (transaction != nil) {
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Call has already ended"}];
+            }
+            return;
+        }
+        // FaceTime and Phone can proxy the same TUCall. A preceding helper may
+        // have answered this exact call before this request reaches its queue.
+        // Acknowledge only the already-active, already-muted postcondition;
+        // never answer twice or repair an active unmuted call in this branch.
+        if ([call callStatus] == 1 && [call isMuted] && [call isUplinkMuted]) {
+            if (transaction != nil) {
+                [controller sendMessage: @{
+                    @"transactionId": transaction,
+                    @"outcome": @"answered-muted",
+                    @"muted": @YES,
+                    @"is_uplink_muted": @YES,
+                }];
+            }
+            return;
+        }
+        if ([call callStatus] != 4) {
+            if (transaction != nil) {
+                [controller sendMessage: @{@"transactionId": transaction, @"error": @"Call is not waiting to be answered!"}];
             }
             return;
         }
@@ -663,13 +685,23 @@ FACETIMEHELPER *plugin;
             ? data[@"callUUIDs"]
             : @[];
         TUCall *matchedCall = nil;
+        NSUInteger endedCallCount = 0;
         for (id alias in aliases) {
             if (![alias isKindOfClass:[NSString class]]) {
                 continue;
             }
-            matchedCall = [[TUCallCenter sharedInstance] callWithCallUUID:alias];
-            if (matchedCall != nil) {
-                break;
+            TUCall *candidate = [[TUCallCenter sharedInstance] callWithCallUUID:alias];
+            if (candidate == nil) {
+                continue;
+            }
+            // Apple may retain terminal call objects after disconnect. Only
+            // dateEnded establishes terminality; an unknown status stays live.
+            if ([candidate dateEnded] != nil) {
+                endedCallCount++;
+                continue;
+            }
+            if (matchedCall == nil) {
+                matchedCall = candidate;
             }
         }
         if (transaction != nil) {
@@ -677,6 +709,8 @@ FACETIMEHELPER *plugin;
                 @"transactionId": transaction,
                 @"outcome": matchedCall == nil ? @"absent" : @"present",
                 @"found": @(matchedCall != nil),
+                @"has_ended": @(matchedCall == nil && endedCallCount > 0),
+                @"ended_call_count": @(endedCallCount),
                 @"call_uuid": [matchedCall callUUID] ?: [NSNull null],
                 @"call_status": matchedCall == nil ? [NSNull null] : @([matchedCall callStatus]),
             }];

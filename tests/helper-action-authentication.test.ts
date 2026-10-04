@@ -42,6 +42,31 @@ function runNativeCheck(sources: string[], generatedSource?: string, helperImage
 }
 
 describe("FaceTime helper native contracts", () => {
+  it("checks every carrier alias before confirming no live call remains", { timeout: 20_000 }, () => {
+    const helper = readFileSync("helper/FaceTimeHelper/FaceTimeHelper.m", "utf8");
+    const action = helper.indexOf('    } else if ([event isEqualToString:@"inspect-call"]) {');
+    const start = helper.indexOf("\n", action) + 1;
+    const end = helper.indexOf('    } else if ([event isEqualToString:@"safety-mute"])', start);
+    expect(action).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    runNativeCheck([], readFileSync("helper/tests/InspectCallDispatchTests.m", "utf8")
+      .replace("/* OPENCLAW_INSPECT_BODY */", helper.slice(start, end)));
+  });
+
+  it("acknowledges a shared call answer only while already active and muted", { timeout: 20_000 }, () => {
+    const helper = readFileSync("helper/FaceTimeHelper/FaceTimeHelper.m", "utf8");
+    const action = helper.indexOf('    if ([event isEqualToString:@"answer-call"]) {');
+    const start = helper.indexOf("\n", action) + 1;
+    const end = helper.indexOf('    } else if ([event isEqualToString:@"leave-call"])', start);
+    expect(action).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    runNativeCheck([], readFileSync("helper/tests/AnswerCallDispatchTests.m", "utf8")
+      .replace("/* OPENCLAW_REQUIRED_CALL_UUID */", helper.slice(
+        helper.indexOf("static NSString *RequiredCallUUIDString("),
+        helper.indexOf("static BOOL ApplyOutboundSafetyMute(")))
+      .replace("/* OPENCLAW_ANSWER_BODY */", helper.slice(start, end)));
+  });
+
   it(
     "rejects same-session replay and envelopes captured before reconnect",
     { timeout: 20_000 },

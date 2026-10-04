@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Acknowledge a duplicate answer from another helper when the exact FaceTime call is already active and safely muted. This avoids rejecting a successful shared call answer without changing audio or weakening transport checks.
+- Inspect all carrier aliases for live calls. Retained calls with a confirmed end date no longer prevent hangup confirmation, and an ended alias cannot hide a live replacement. Inspection includes explicit terminal evidence.
+
 User-visible native, compatibility, security, and release changes are recorded
 here. Published versions are listed in
 [GitHub Releases](https://github.com/openclaw/openclaw-facetime/releases).
