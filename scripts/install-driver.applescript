@@ -1,7 +1,7 @@
 on run argv
 	if (count of argv) is not 1 then error "Expected the packaged privileged installer path"
 	set sourceInstaller to item 1 of argv
-	set expectedInstallerDigest to "0abc42e714516f55501a9f4195a5fb99f7ebfc6aa0a5614cbb3460f11a815ad2"
+	set expectedInstallerDigest to "b7ac7899e8622524ded3d3e4378197469463a30806ad350f832c709cf88e80a7"
 	set installCommand to "set -eu; " & ¬
 		"work=$(/usr/bin/mktemp -d /private/tmp/openclaw-driver-install.XXXXXX); " & ¬
 		"cleanup() { if test -x /usr/bin/trash; then /usr/bin/trash \"$work\"; else /usr/bin/python3 -c 'import os, shutil, sys; p=sys.argv[1]; shutil.rmtree(p) if os.path.isdir(p) and not os.path.islink(p) else (os.unlink(p) if os.path.lexists(p) else None)' \"$work\"; fi; }; " & ¬

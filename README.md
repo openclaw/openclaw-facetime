@@ -117,6 +117,11 @@ The generated driver is a separate modified GPL-3.0 artifact. It is ignored by
 Git and intentionally excluded from this repository's release archive and
 Homebrew formula.
 
+The privileged installer limits its source download to a 30-second connection
+timeout and a 120-second total timeout. A timeout or checksum failure stops
+installation before extraction or changes to the installed driver; retry once
+network access is working.
+
 ## Shared native contracts
 
 Two small files intentionally mirror contracts consumed by the canonical

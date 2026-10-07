@@ -12,6 +12,7 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Bound the privileged paired-driver source download to a 30-second connection timeout and 120 seconds total, so a stalled request cannot indefinitely hold the administrator installer open. Thanks @SebTardif. (#55)
 - Respect explicit SIP debugging restrictions and reject contradictory status output before attempting manual helper injection.
 
 ## 0.1.3 - 2026-09-22
