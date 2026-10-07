@@ -50,7 +50,7 @@ OpenClaw plugin owns caller admission and must consume that selection.
 - Apple Silicon and macOS 14.4 or later
 - full Xcode, normally at `/Applications/Xcode.app`
 - Node.js 22.22.3+ within Node 22, 24.15.0+ within Node 24, or 26+;
-  and pnpm 11.27.0, for this repository's development harness
+  and pnpm 11.28.4, for this repository's development harness
 
 Vitest 5 does not support Node 25. These Node.js requirements apply to the
 development harness; the distributed native binaries do not require Node.js.
