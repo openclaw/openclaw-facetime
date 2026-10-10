@@ -15,6 +15,10 @@ here. Published versions are listed in
 - Bound the privileged paired-driver source download to a 30-second connection timeout and 120 seconds total, so a stalled request cannot indefinitely hold the administrator installer open. Thanks @SebTardif. (#55)
 - Respect explicit SIP debugging restrictions and reject contradictory status output before attempting manual helper injection.
 
+### Changed
+
+- Refresh the private test harness dependencies and pnpm to 11.28.5 while retaining the two-day dependency cooldown and supported Node.js versions.
+
 ## 0.1.3 - 2026-09-22
 
 **Highlights:** Harden helper JSON validation, preserve outbound-call reconciliation, and prevent stuck injection and duplicate polling.
