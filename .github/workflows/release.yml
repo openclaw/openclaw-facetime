@@ -43,7 +43,7 @@ jobs:
           VERSION: ${{ inputs.version || github.ref_name }}
           CI_WORKFLOWS: ci.yml
         run: |
-          if [ "$VERSION" = main ]; then export VERSION="$(sed -n 's/^VERSION=//p' version.env)"; fi
+          if [ "$VERSION" = main ]; then VERSION="$(sed -n 's/^VERSION=//p' version.env)"; export VERSION; fi
           python3 -B scripts/release-preflight.py
 
   sign:
