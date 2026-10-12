@@ -1,12 +1,18 @@
 name: Release
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: "SemVer to release, with or without a leading v"
-        required: true
+        description: Prepared version (blank uses the current metadata)
         type: string
+        required: false
+      dry_run:
+        description: Build, sign, notarize and verify without publishing
+        type: boolean
+        default: true
 
 permissions: {}
 
@@ -16,160 +22,33 @@ concurrency:
 
 jobs:
   validate:
-    name: 1 · Validate frozen source
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
     outputs:
-      tag: ${{ steps.input.outputs.tag }}
-      target-sha: ${{ steps.source.outputs.target-sha }}
-      tag-object-sha: ${{ steps.source.outputs.tag-object-sha }}
+      tag: ${{ steps.source.outputs.tag }}
+      target-sha: ${{ steps.source.outputs.sha }}
+      tag-object-sha: ${{ steps.source.outputs.tag_object }}
     steps:
-      - name: Validate input
-        id: input
-        env:
-          VERSION: ${{ inputs.version }}
-        run: |
-          set -euo pipefail
-          version=${VERSION#v}
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
-          echo "tag=v$version" >>"$GITHUB_OUTPUT"
-      - name: Resolve protected release target
-        id: source
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          TAG: ${{ steps.input.outputs.tag }}
-        with:
-          script: |
-            const repository = await github.rest.repos.get(context.repo);
-            const branchName = repository.data.default_branch;
-            const branch = await github.rest.repos.getBranch({ ...context.repo, branch: branchName });
-            if (context.ref !== `refs/heads/${branchName}` || context.sha !== branch.data.commit.sha) {
-              throw new Error(`release must run from current ${branchName}`);
-            }
-            let targetSha = context.sha;
-            let tagObjectSha = '';
-            try {
-              const ref = await github.rest.git.getRef({ ...context.repo, ref: `tags/${process.env.TAG}` });
-              if (ref.data.object.type !== 'tag') throw new Error('existing release tag must be annotated');
-              tagObjectSha = ref.data.object.sha;
-              const tag = await github.rest.git.getTag({ ...context.repo, tag_sha: tagObjectSha });
-              if (tag.data.object.type !== 'commit') throw new Error('release tag must peel to a commit');
-              targetSha = tag.data.object.sha;
-              const comparison = await github.rest.repos.compareCommitsWithBasehead({
-                ...context.repo, basehead: `${targetSha}...${context.sha}`,
-              });
-              if (!['ahead', 'identical'].includes(comparison.data.status)) {
-                throw new Error('existing release tag is not reachable from the default branch');
-              }
-            } catch (error) {
-              if (error.status !== 404) throw error;
-            }
-            core.setOutput('target-sha', targetSha);
-            core.setOutput('tag-object-sha', tagObjectSha);
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
-          ref: ${{ steps.source.outputs.target-sha }}
-      - name: Verify version and exact CI
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      - name: Validate source and exact push CI
+        id: source
         env:
-          TAG: ${{ steps.input.outputs.tag }}
-          TARGET_SHA: ${{ steps.source.outputs.target-sha }}
-        with:
-          script: |
-            const fs = require('fs');
-            const version = fs.readFileSync('version.env', 'utf8').match(/^VERSION=(.+)$/m)?.[1];
-            if (`v${version}` !== process.env.TAG) throw new Error('version.env does not match release input');
-            const repository = await github.rest.repos.get(context.repo);
-            const branchName = repository.data.default_branch;
-            const workflow = await github.rest.actions.getWorkflow({
-              ...context.repo, workflow_id: 'ci.yml',
-            });
-            if (workflow.data.state !== 'active') throw new Error('CI workflow is not active');
-            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-              ...context.repo,
-              workflow_id: workflow.data.id,
-              branch: branchName,
-              event: 'push',
-              head_sha: process.env.TARGET_SHA,
-              status: 'completed',
-              per_page: 100,
-            });
-            const green = runs.find((run) =>
-              run.head_sha === process.env.TARGET_SHA &&
-              run.head_branch === branchName &&
-              run.event === 'push' &&
-              run.status === 'completed' &&
-              run.conclusion === 'success'
-            );
-            if (!green) throw new Error(`no successful ${branchName} push run of ci.yml for ${process.env.TARGET_SHA}`);
-      - name: Validate release prerequisites
-        env:
-          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
-          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
-          ASC_PRIVATE_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          MACOS_SIGNING_P12: ${{ secrets.MACOS_SIGNING_P12 }}
-          MACOS_SIGNING_P12_PASSWORD: ${{ secrets.MACOS_SIGNING_P12_PASSWORD }}
-          REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
+          VERSION: ${{ inputs.version || github.ref_name }}
+          CI_WORKFLOWS: ci.yml
         run: |
-          set -euo pipefail
-          for name in MACOS_SIGNING_P12 MACOS_SIGNING_P12_PASSWORD ASC_KEY_ID ASC_ISSUER_ID ASC_PRIVATE_KEY_P8 HOMEBREW_TAP_TOKEN; do
-            [[ -n "${!name:-}" ]] || { echo "missing release secret: $name" >&2; exit 1; }
-          done
-          [[ "$REPOSITORY_VISIBILITY" == "public" ]] || {
-            echo "openclaw/openclaw-facetime must be public before its GitHub release can back Homebrew" >&2
-            exit 1
-          }
-
-  tag:
-    name: 2 · Freeze annotated tag
-    needs: validate
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: write
-    outputs:
-      tag-object-sha: ${{ steps.freeze.outputs.tag-object-sha }}
-    steps:
-      - name: Create or verify tag
-        id: freeze
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env:
-          EXPECTED_TAG_OBJECT: ${{ needs.validate.outputs.tag-object-sha }}
-          TAG: ${{ needs.validate.outputs.tag }}
-          TARGET_SHA: ${{ needs.validate.outputs.target-sha }}
-        with:
-          script: |
-            if (process.env.EXPECTED_TAG_OBJECT) {
-              const ref = await github.rest.git.getRef({ ...context.repo, ref: `tags/${process.env.TAG}` });
-              if (ref.data.object.type !== 'tag' || ref.data.object.sha !== process.env.EXPECTED_TAG_OBJECT) {
-                throw new Error('release tag changed after validation');
-              }
-              core.setOutput('tag-object-sha', ref.data.object.sha);
-              return;
-            }
-            const tag = await github.rest.git.createTag({
-              ...context.repo,
-              tag: process.env.TAG,
-              message: `Release ${process.env.TAG}`,
-              object: process.env.TARGET_SHA,
-              type: 'commit',
-              tagger: {
-                name: 'github-actions[bot]',
-                email: '41898282+github-actions[bot]@users.noreply.github.com',
-                date: new Date().toISOString(),
-              },
-            });
-            await github.rest.git.createRef({ ...context.repo, ref: `refs/tags/${process.env.TAG}`, sha: tag.data.sha });
-            core.setOutput('tag-object-sha', tag.data.sha);
+          if [ "$VERSION" = main ]; then VERSION="$(sed -n 's/^VERSION=//p' version.env)"; export VERSION; fi
+          python3 -B scripts/release-preflight.py
 
   sign:
     name: 3 · Build, sign, and notarize
-    needs: [validate, tag]
+    needs: validate
     runs-on: macos-15
     timeout-minutes: 60
     permissions:
@@ -180,6 +59,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ needs.validate.outputs.target-sha }}
       - name: Import OpenClaw Foundation signer
         id: signer
@@ -216,7 +96,7 @@ jobs:
           [[ "$identity" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "required signing identity missing: $authority" >&2; exit 1; }
           echo "identity=$identity" >>"$GITHUB_OUTPUT"
           : >"$p12"
-          /usr/bin/trash "$p12"
+          rm -f "$p12"
       - name: Create signed release payload
         env:
           APP_STORE_CONNECT_API_KEY_P8: ${{ secrets.ASC_PRIVATE_KEY_P8 }}
@@ -248,7 +128,7 @@ jobs:
           cleanup_status=0
           if [[ -n "${P12:-}" && -e "$P12" ]]; then
             : >"$P12"
-            /usr/bin/trash "$P12" || cleanup_status=$?
+            rm -f "$P12" || cleanup_status=$?
           fi
           if [[ -n "${SEARCH_LIST:-}" && -f "$SEARCH_LIST" ]]; then
             original_keychains=()
@@ -256,92 +136,80 @@ jobs:
               [[ -z "$existing_keychain" ]] || original_keychains+=("$existing_keychain")
             done <"$SEARCH_LIST"
             security list-keychains -d user -s "${original_keychains[@]}" || cleanup_status=$?
-            /usr/bin/trash "$SEARCH_LIST" || cleanup_status=$?
+            rm -f "$SEARCH_LIST" || cleanup_status=$?
           fi
           if [[ -n "${KEYCHAIN:-}" && -e "$KEYCHAIN" ]]; then
             security delete-keychain "$KEYCHAIN" || cleanup_status=$?
           fi
           exit "$cleanup_status"
 
-  release:
-    name: 4 · Draft, verify, and publish
-    needs: [validate, tag, sign]
+  verify:
+    needs: [validate, sign]
     runs-on: macos-15
-    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.target-sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sign.outputs.artifact-name }}
+          path: bin
+      - name: Independently verify signed payload
+        run: |
+          REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
+            EXPECTED_TEAM_ID=FWJYW4S8P8 make native-verify
+
+  release:
+    if: github.event_name == 'push'
+    needs: [validate, sign, verify]
+    runs-on: macos-15
     permissions:
       actions: read
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
           ref: ${{ needs.validate.outputs.target-sha }}
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.sign.outputs.artifact-name }}
           path: release-assets
-      - name: Verify frozen tag before release writes
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env: &release-tag-environment
-          TAG: ${{ needs.validate.outputs.tag }}
-          TARGET_SHA: ${{ needs.validate.outputs.target-sha }}
-          TAG_OBJECT_SHA: ${{ needs.tag.outputs.tag-object-sha }}
-        # Keep the guard in the workflow so reruns of older release targets do
-        # not depend on a newly added script in the target checkout.
-        with: &verify-release-tag
-          script: |
-            const ref = await github.rest.git.getRef({ ...context.repo, ref: `tags/${process.env.TAG}` });
-            if (ref.data.object.type !== 'tag' || ref.data.object.sha !== process.env.TAG_OBJECT_SHA) {
-              throw new Error('release tag changed after it was frozen');
-            }
-            const tag = await github.rest.git.getTag({ ...context.repo, tag_sha: ref.data.object.sha });
-            if (tag.data.object.type !== 'commit' || tag.data.object.sha !== process.env.TARGET_SHA) {
-              throw new Error('release tag no longer identifies the validated source');
-            }
-      - name: Create or resume release
-        id: release-state
+      - name: Reverify tag and publish exact changelog notes
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
+          TAG_OBJECT: ${{ needs.validate.outputs.tag-object-sha }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" --json isDraft >/dev/null 2>&1; then
-            is_draft="$(gh release view "$TAG" --json isDraft --jq .isDraft)"
-            if [[ "$is_draft" == "true" ]]; then
-              gh release upload "$TAG" release-assets/* --clobber
-              echo "publish-needed=true" >>"$GITHUB_OUTPUT"
-            elif [[ "$is_draft" == "false" ]]; then
-              echo "publish-needed=false" >>"$GITHUB_OUTPUT"
-            else
-              echo "Could not determine existing release state for $TAG" >&2
-              exit 1
-            fi
-          else
-            gh release create "$TAG" --draft --verify-tag --title "$TAG" --generate-notes
-            gh release upload "$TAG" release-assets/* --clobber
-            echo "publish-needed=true" >>"$GITHUB_OUTPUT"
-          fi
-      - name: Download and independently verify release assets
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: |
-          mkdir -p bin
+          git fetch origin "refs/tags/$TAG:refs/audit/tag"
+          test "$(git rev-parse refs/audit/tag)" = "$TAG_OBJECT"
+          git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers verify-tag refs/audit/tag
+          python3 - "$TAG" <<'PYCODE'
+          import importlib.util
+          from pathlib import Path
+          import sys
+          spec = importlib.util.spec_from_file_location('release', 'scripts/release-preflight.py')
+          release = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(release)
+          Path('release-notes.md').write_text(release.notes_for(Path('CHANGELOG.md').read_text(), sys.argv[1][1:]))
+          PYCODE
+          flags=()
+          [[ "$TAG" != *-* ]] || flags+=(--prerelease --latest=false)
+          gh release create "$TAG" release-assets/* --draft --verify-tag --title "$TAG" --notes-file release-notes.md "${flags[@]}"
           gh release download "$TAG" --dir bin --pattern 'openclaw-facetime-macos-arm64.zip*'
+          cmp release-assets/openclaw-facetime-macos-arm64.zip bin/openclaw-facetime-macos-arm64.zip
           REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
             EXPECTED_TEAM_ID=FWJYW4S8P8 make native-verify
-      - name: Verify frozen tag before publication and handoff
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
-        env: *release-tag-environment
-        with: *verify-release-tag
-      - name: Publish verified draft
-        if: steps.release-state.outputs.publish-needed == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ needs.validate.outputs.tag }}
-        run: gh release edit "$TAG" --draft=false
+          gh release edit "$TAG" --draft=false
 
   homebrew:
+    if: github.event_name == 'push' && !contains(github.ref_name, '-')
     name: 5 · Update Homebrew
     needs: [validate, release]
     permissions:

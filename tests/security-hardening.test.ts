@@ -107,28 +107,10 @@ describe("privileged FaceTime support boundaries", () => {
 
   it("gates every release side effect on exact CI and release prerequisites", () => {
     const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
-    const tagJob = releaseWorkflow.indexOf("\n  tag:");
-    const readinessGate = releaseWorkflow.indexOf("Validate release prerequisites");
-    const handoffJob = releaseWorkflow.indexOf("\n  homebrew:");
-    const beforeTag = releaseWorkflow.slice(0, tagJob);
-
-    expect(readinessGate).toBeGreaterThan(0);
-    expect(readinessGate).toBeLessThan(tagJob);
-    expect(handoffJob).toBeGreaterThan(tagJob);
-    expect(beforeTag).toContain("workflow_id: 'ci.yml'");
-    expect(beforeTag).toContain("run.conclusion === 'success'");
-    expect(beforeTag).toContain("REPOSITORY_VISIBILITY");
-    for (const secret of [
-      "MACOS_SIGNING_P12",
-      "MACOS_SIGNING_P12_PASSWORD",
-      "ASC_KEY_ID",
-      "ASC_ISSUER_ID",
-      "ASC_PRIVATE_KEY_P8",
-      "HOMEBREW_TAP_TOKEN",
-    ]) {
-      expect(beforeTag).toContain(secret);
-    }
-    expect(beforeTag).not.toContain(".github/formula-profiles/openclaw-facetime.rb");
+    expect(releaseWorkflow).toContain("python3 -B scripts/release-preflight.py");
+    expect(releaseWorkflow).toContain("needs: [validate, sign, verify]");
+    expect(releaseWorkflow).toContain("if: github.event_name == 'push'");
+    expect(releaseWorkflow).not.toContain("createTag");
     expect(releaseWorkflow).not.toContain(".permissions.push");
   });
 
@@ -136,8 +118,8 @@ describe("privileged FaceTime support boundaries", () => {
     const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
     const handoffWorkflow = readFileSync(".github/workflows/homebrew-handoff.yml", "utf8");
     const releaseJob = releaseWorkflow.indexOf("\n  release:");
-    const verifyAssets = releaseWorkflow.indexOf("Download and independently verify release assets", releaseJob);
-    const publishDraft = releaseWorkflow.indexOf("Publish verified draft", releaseJob);
+    const verifyAssets = releaseWorkflow.indexOf("cmp release-assets/", releaseJob);
+    const publishDraft = releaseWorkflow.indexOf('gh release edit "$TAG" --draft=false', releaseJob);
     const handoffJob = releaseWorkflow.indexOf("\n  homebrew:");
     const handoffGate = handoffWorkflow.indexOf("Validate Homebrew handoff readiness");
     const updateTap = handoffWorkflow.indexOf("Update OpenClaw Homebrew tap");
@@ -164,22 +146,13 @@ describe("privileged FaceTime support boundaries", () => {
     expect(handoffWorkflow.slice(handoffGate, updateTap)).toContain("formula_profile");
   });
 
-  it("restores the signing search list and resumes existing releases", () => {
+  it("restores the signing search list and refuses existing releases", () => {
     const releaseWorkflow = readFileSync(".github/workflows/release.yml", "utf8");
-    const publishedReleaseBranch = releaseWorkflow.slice(
-      releaseWorkflow.indexOf('elif [[ "$is_draft" == "false" ]]'),
-      releaseWorkflow.indexOf("else", releaseWorkflow.indexOf('elif [[ "$is_draft" == "false" ]]')),
-    );
-
+    const guard = readFileSync("scripts/release-preflight.py", "utf8");
     expect(releaseWorkflow).toContain('security list-keychains -d user -s "$keychain"');
     expect(releaseWorkflow).toContain('security list-keychains -d user -s "${original_keychains[@]}"');
-    expect(releaseWorkflow).toContain('gh release view "$TAG"');
-    expect(releaseWorkflow).toContain('gh release upload "$TAG" release-assets/* --clobber');
-    expect(releaseWorkflow).toContain('elif [[ "$is_draft" == "false" ]]');
-    expect(publishedReleaseBranch).toContain('echo "publish-needed=false"');
-    expect(publishedReleaseBranch).not.toContain("gh release upload");
-    expect(releaseWorkflow).toContain("publish-needed");
-    expect(releaseWorkflow).toContain("if: steps.release-state.outputs.publish-needed == 'true'");
+    expect(guard).toContain("release already exists; never overwrite it");
+    expect(releaseWorkflow).not.toContain("--clobber");
   });
 
   it("keeps the reviewed Homebrew profile contract in the native repository", () => {
