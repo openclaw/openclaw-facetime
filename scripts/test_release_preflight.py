@@ -10,6 +10,11 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
 class ReleasePreflightTests(unittest.TestCase):
+    def test_current_release_metadata_has_one_nonempty_dated_section(self):
+        root = Path(__file__).resolve().parent.parent
+        version = dict(line.split("=", 1) for line in (root / "version.env").read_text().splitlines())["VERSION"]
+        self.assertTrue(release.notes_for((root / "CHANGELOG.md").read_text(), version).strip())
+
     def test_notes_require_unique_dated_nonempty_section(self):
         self.assertEqual(release.notes_for('## 1.2.3 - 2026-10-12\n\n- Fix\n\n## 1.2.2 - 2026-10-11\n- Old\n', '1.2.3'), '- Fix\n')
         for text in ['## 1.2.3 - Unreleased\n- Fix', '## 1.2.3 - 2026-10-12\n', '## 1.2.3 - 2026-10-12\n- Fix\n## 1.2.3 - 2026-10-12\n- Duplicate']:
