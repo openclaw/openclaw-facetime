@@ -2,8 +2,8 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-describe("privileged driver download", () => {
-  const installer = readFileSync("scripts/install-driver-root.sh", "utf8");
+describe.each(["scripts/install-driver-root.sh", "scripts/build-driver.sh"])("driver download: %s", (script) => {
+  const installer = readFileSync(script, "utf8");
   const start = installer.indexOf("/usr/bin/curl -fsSL");
   const end = installer.indexOf('\nplist="$source_dir/', start);
 
@@ -11,7 +11,7 @@ describe("privileged driver download", () => {
     { name: "download timeout", curlExit: 28, hashExit: 0, expected: 28, steps: ["download"] },
     { name: "checksum mismatch", curlExit: 0, hashExit: 1, expected: 1, steps: ["download", "checksum"] },
     { name: "verified archive", curlExit: 0, hashExit: 0, expected: 0, steps: ["download", "checksum", "extract"] },
-  ])("handles $name before any privileged installation", ({ curlExit, hashExit, expected, steps }) => {
+  ])("handles $name before extraction or installation", ({ curlExit, hashExit, expected, steps }) => {
     expect(start).toBeGreaterThan(0);
     expect(end).toBeGreaterThan(start);
     // Execute the real download/verification sequence with command fixtures;

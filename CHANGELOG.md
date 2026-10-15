@@ -12,11 +12,13 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Apply the paired-driver installer's download deadlines to local driver builds too, so a stalled source request cannot hang `pnpm build:driver` indefinitely.
 - Bound the privileged paired-driver source download to a 30-second connection timeout and 120 seconds total, so a stalled request cannot indefinitely hold the administrator installer open. Thanks @SebTardif. (#55)
 - Respect explicit SIP debugging restrictions and reject contradictory status output before attempting manual helper injection.
 
 ### Changed
 
+- Update the private test harness's Vite override to 8.3.4 while retaining the two-day dependency cooldown and supported Node.js versions.
 - Refresh the private test harness dependencies and pnpm to 11.28.5 while retaining the two-day dependency cooldown and supported Node.js versions.
 
 ## 0.1.3 - 2026-09-22
