@@ -36,6 +36,8 @@ cleanup() {
 trap cleanup EXIT
 
 /usr/bin/curl -fsSL \
+  --connect-timeout 30 \
+  --max-time 120 \
   "https://github.com/ExistentialAudio/BlackHole/archive/refs/tags/v$version.tar.gz" \
   -o "$archive"
 printf '%s  %s\n' "$archive_sha256" "$archive" | /usr/bin/shasum -a 256 -c -
