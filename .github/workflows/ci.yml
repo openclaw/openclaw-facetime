@@ -27,7 +27,7 @@ jobs:
 
   harness:
     name: Harness Node ${{ matrix.node }}
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -51,7 +51,7 @@ jobs:
     needs: harness
     # A skipped required check can permit a merge; report a failed matrix explicitly.
     if: ${{ always() }}
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 30
     steps:
       - name: Require supported Node harness checks
