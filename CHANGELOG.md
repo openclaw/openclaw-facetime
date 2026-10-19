@@ -18,6 +18,7 @@ here. Published versions are listed in
 
 ### Changed
 
+- Update the private test harness to Vitest 5.0.5 while preserving the two-day dependency cooldown and supported Node.js versions.
 - Move native CI and release verification to Xcode 27 runners while preserving the macOS 14.4 capture target and Mac Catalyst targets; retain macOS 26 for Swift CodeQL tracing.
 - Update the private test harness's Vite override to 8.3.4 while retaining the two-day dependency cooldown and supported Node.js versions.
 - Refresh the private test harness dependencies and pnpm to 11.28.5 while retaining the two-day dependency cooldown and supported Node.js versions.
