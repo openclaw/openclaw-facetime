@@ -49,7 +49,7 @@ jobs:
   sign:
     name: 3 · Build, sign, and notarize
     needs: validate
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 60
     permissions:
       contents: read
@@ -145,7 +145,7 @@ jobs:
 
   verify:
     needs: [validate, sign]
-    runs-on: macos-15
+    runs-on: xcode-27
     permissions:
       actions: read
       contents: read
@@ -166,7 +166,7 @@ jobs:
   release:
     if: github.event_name == 'push'
     needs: [validate, sign, verify]
-    runs-on: macos-15
+    runs-on: xcode-27
     permissions:
       actions: read
       contents: write
