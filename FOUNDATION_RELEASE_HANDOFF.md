@@ -14,8 +14,10 @@ It builds `openclaw-facetime-macos-arm64.zip`, signs both Mach-O files, notarize
 the ZIP, independently verifies the release assets and online notarization
 tickets, and publishes the release. Only after publication does it verify the
 tap-owned FaceTime formula profile and dispatch the OpenClaw Homebrew tap
-updater. A retry resumes the same annotated tag and existing draft or published
-release rather than creating a second release or replacing published assets.
+updater. Before a GitHub release exists, a separately signed recovery tag can run
+a repaired workflow against the unchanged version tag. Existing releases are
+never overwritten; use the Homebrew retry workflow for a failed handoff after
+publication. See `docs/RELEASING.md` for the recovery tag and validation contract.
 
 ## Foundation actions required
 

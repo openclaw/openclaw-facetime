@@ -6,6 +6,10 @@ here. Published versions are listed in
 
 ## Unreleased
 
+### Fixed
+
+- Fix native release publication on macOS Bash 3.2 and allow separately signed recovery tags to finish an uncreated release from its unchanged version tag.
+
 ## 0.2.0 - 2026-10-20
 
 **Highlights:** Select the native backend from current host capabilities without changing security settings, honor explicit SIP restrictions, and bound paired-driver downloads.

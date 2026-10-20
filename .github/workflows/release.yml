@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', 'release-recovery/**']
   workflow_dispatch:
     inputs:
       version:
@@ -30,6 +30,8 @@ jobs:
       tag: ${{ steps.source.outputs.tag }}
       target-sha: ${{ steps.source.outputs.sha }}
       tag-object-sha: ${{ steps.source.outputs.tag_object }}
+      recovery-tag: ${{ steps.source.outputs.recovery_tag }}
+      recovery-tag-object-sha: ${{ steps.source.outputs.recovery_tag_object }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -185,8 +187,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.validate.outputs.tag }}
           TAG_OBJECT: ${{ needs.validate.outputs.tag-object-sha }}
+          RECOVERY_TAG: ${{ needs.validate.outputs.recovery-tag }}
+          RECOVERY_TAG_OBJECT: ${{ needs.validate.outputs.recovery-tag-object-sha }}
         run: |
           set -euo pipefail
+          if [[ -n "$RECOVERY_TAG" ]]; then
+            git fetch origin "refs/tags/$RECOVERY_TAG:refs/audit/recovery"
+            test "$(git rev-parse refs/audit/recovery)" = "$RECOVERY_TAG_OBJECT"
+            git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers verify-tag refs/audit/recovery
+          fi
           git fetch origin "refs/tags/$TAG:refs/audit/tag"
           test "$(git rev-parse refs/audit/tag)" = "$TAG_OBJECT"
           git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=.github/release-allowed-signers verify-tag refs/audit/tag
@@ -199,9 +208,9 @@ jobs:
           spec.loader.exec_module(release)
           Path('release-notes.md').write_text(release.notes_for(Path('CHANGELOG.md').read_text(), sys.argv[1][1:]))
           PYCODE
-          flags=()
-          [[ "$TAG" != *-* ]] || flags+=(--prerelease --latest=false)
-          gh release create "$TAG" release-assets/* --draft --verify-tag --title "$TAG" --notes-file release-notes.md "${flags[@]}"
+          release_args=("$TAG" release-assets/* --draft --verify-tag --title "$TAG" --notes-file release-notes.md)
+          [[ "$TAG" != *-* ]] || release_args+=(--prerelease --latest=false)
+          gh release create "${release_args[@]}"
           gh release download "$TAG" --dir bin --pattern 'openclaw-facetime-macos-arm64.zip*'
           cmp release-assets/openclaw-facetime-macos-arm64.zip bin/openclaw-facetime-macos-arm64.zip
           REQUIRE_DEVELOPER_ID=1 REQUIRE_NOTARIZATION_RECEIPT=1 REQUIRE_NOTARIZED_GATEKEEPER=1 \
@@ -209,7 +218,7 @@ jobs:
           gh release edit "$TAG" --draft=false
 
   homebrew:
-    if: github.event_name == 'push' && !contains(github.ref_name, '-')
+    if: github.event_name == 'push' && !contains(needs.validate.outputs.tag, '-')
     name: 5 · Update Homebrew
     needs: [validate, release]
     permissions:
