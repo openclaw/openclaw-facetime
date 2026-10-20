@@ -10,6 +10,12 @@ describe("frozen release source", () => {
     expect(result.status, result.stderr).toBe(0);
   });
 
+  it("enforces the recovery authority chain with real Git signatures", () => {
+    const result = spawnSync("python3", ["-B", "scripts/test_release_recovery.py"], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"writes": ["create", "publish"]');
+  }, 60_000);
+
   it("never creates or rewrites version tags", () => {
     expect(workflow).not.toMatch(/createTag|createRef|--clobber/);
     expect(workflow).toContain("needs: [validate, sign, verify]");
