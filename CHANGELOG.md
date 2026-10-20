@@ -6,6 +6,10 @@ here. Published versions are listed in
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-20
+
+**Highlights:** Select the native backend from current host capabilities without changing security settings, honor explicit SIP restrictions, and bound paired-driver downloads.
+
 ### Added
 
 - Select the native backend at runtime with `facetime-audio-capture --select-backend`: retain the injected helper where current security policy and actual initialization permit it, otherwise select out-of-process capture without changing system security settings. Both native artifacts remain shipped. Thanks @RomneyDa. (#50)
