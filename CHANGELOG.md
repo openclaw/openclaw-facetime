@@ -6,10 +6,6 @@ here. Published versions are listed in
 
 ## Unreleased
 
-## 0.2.0 - 2026-10-20
-
-**Highlights:** Select the native backend from current host capabilities without changing security settings, honor explicit SIP restrictions, and bound paired-driver downloads.
-
 ### Added
 
 - Select the native backend at runtime with `facetime-audio-capture --select-backend`: retain the injected helper where current security policy and actual initialization permit it, otherwise select out-of-process capture without changing system security settings. Both native artifacts remain shipped. Thanks @RomneyDa. (#50)
@@ -22,6 +18,7 @@ here. Published versions are listed in
 
 ### Changed
 
+- Update the development harness to pnpm 11.28.6 while retaining the two-day dependency cooldown and supported Node.js versions.
 - Publish native releases only from signed annotated tags after exact-commit push CI succeeds, with signed and notarized dry runs available before publication.
 - Update the private test harness to Vitest 5.0.5 while preserving the two-day dependency cooldown and supported Node.js versions.
 - Move native CI and release verification to Xcode 27 runners while preserving the macOS 14.4 capture target and Mac Catalyst targets; retain macOS 26 for Swift CodeQL tracing.
