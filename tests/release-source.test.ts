@@ -23,4 +23,15 @@ describe("frozen release source", () => {
     expect(verify).toContain("make native-verify");
     expect(workflow.split("\n  release:\n")[1]).toContain("if: github.event_name == 'push'");
   });
+
+  it.each(["v0.2.0", "v0.2.1-rc.1"])("builds publication arguments under Bash nounset for %s", (tag) => {
+    const command = workflow.split("          PYCODE\n")[1].split("          gh release download")[0];
+    const result = spawnSync("/bin/bash", ["-uc", `gh() { printf '%s\\n' "$@"; }\n${command}`], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, TAG: tag },
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout.split("\n")).toContain(tag);
+    expect(result.stdout.includes("--prerelease")).toBe(tag.includes("-"));
+  });
 });
