@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Select patched Node.js versions in the CI harness to reject the disclosed eMudhra incident keys.
+
 - Fix native release publication on macOS Bash 3.2 and allow separately signed recovery tags to finish an uncreated release from its unchanged version tag.
 
 ## 0.2.0 - 2026-10-20
