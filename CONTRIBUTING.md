@@ -37,7 +37,10 @@ make native-verify
 
 For workflow changes, also run `actionlint`. GitHub CI runs workflow validation
 and the native build/archive checks. It also installs with strict engine
-checking and runs the harness on each supported Node.js minimum.
+checking and runs the harness on patched Node.js 22, 24, and 26 security baselines.
+The range in `package.json` describes harness compatibility; it does not establish
+incident-key rejection for older compatible patches. Use the patched versions
+selected by `.github/workflows/ci.yml` or newer supported patches.
 CodeQL covers Swift, TypeScript, Ruby, and Actions; it does not analyze
 Objective-C. Native source review and helper
 authentication tests remain required when that boundary changes.

@@ -54,6 +54,9 @@ OpenClaw plugin owns caller admission and must consume that selection.
 
 Vitest 5 does not support Node 25. These Node.js requirements apply to the
 development harness; the distributed native binaries do not require Node.js.
+For the disclosed eMudhra incident, use Node.js 22.23.4+, 24.22.1+, or 26.12.1+
+within those supported lines. CI checks those patched security baselines rather
+than the older tooling-compatible minimums.
 
 Signed and notarized native binaries are available through
 [GitHub Releases](https://github.com/openclaw/openclaw-facetime/releases) and Homebrew:
