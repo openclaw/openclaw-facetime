@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Run main CodeQL analysis on the existing weekly schedule instead of every push, preserving PR scans and independent manual runs.
+
 - Update CodeQL security analysis to 4.39.1 while retaining the documented macOS 26 Swift tracing exception. Thanks @dependabot! (#71)
 
 - Update the private harness Vite override to 8.3.5 after the two-day dependency cooldown.
