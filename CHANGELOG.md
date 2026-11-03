@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Trust the current vincentkoc SSH signing key for release tags while retaining existing trusted keys.
+
 - Update CodeQL security analysis to 4.39.1 while retaining the documented macOS 26 Swift tracing exception. Thanks @dependabot! (#71)
 
 - Update the private harness Vite override to 8.3.5 after the two-day dependency cooldown.
