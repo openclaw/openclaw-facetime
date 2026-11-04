@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Restore default code-owner review routing after the maintainer team rename.
+
 - Trust the current vincentkoc SSH signing key for release tags while retaining existing trusted keys.
 
 - Update CodeQL security analysis to 4.39.1 while retaining the documented macOS 26 Swift tracing exception. Thanks @dependabot! (#71)
