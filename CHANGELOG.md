@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Stop a stuck release validate job after 30 minutes, and stop a stuck verify or publish job after 60 minutes, instead of holding the release group until the 360 minute default.
+
 - Restore default code-owner review routing after the maintainer team rename.
 
 - Trust the current vincentkoc SSH signing key for release tags while retaining existing trusted keys.

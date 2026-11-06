@@ -23,6 +23,7 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
@@ -148,6 +149,7 @@ jobs:
   verify:
     needs: [validate, sign]
     runs-on: xcode-27
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: read
@@ -169,6 +171,7 @@ jobs:
     if: github.event_name == 'push'
     needs: [validate, sign, verify]
     runs-on: xcode-27
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: write
