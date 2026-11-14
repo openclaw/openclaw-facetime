@@ -8,6 +8,8 @@ here. Published versions are listed in
 
 ### Fixed
 
+- Refresh the private Vitest harness to 5.1.0, pnpm setup action to 6.1.1, and paired CodeQL actions to 4.39.3 while preserving the two-day dependency cooldown and supported Node.js versions.
+
 - Restore default code-owner review routing after the maintainer team rename.
 
 - Trust the current vincentkoc SSH signing key for release tags while retaining existing trusted keys.
