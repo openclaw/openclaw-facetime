@@ -10,6 +10,12 @@ here. Published versions are listed in
 
 - Run main CodeQL analysis on the existing weekly schedule instead of every push, preserving PR scans and independent manual runs.
 
+- Refresh the private Vitest harness to 5.1.0, pnpm setup action to 6.1.1, and paired CodeQL actions to 4.39.3 while preserving the two-day dependency cooldown and supported Node.js versions.
+
+- Restore default code-owner review routing after the maintainer team rename.
+
+- Trust the current vincentkoc SSH signing key for release tags while retaining existing trusted keys.
+
 - Update CodeQL security analysis to 4.39.1 while retaining the documented macOS 26 Swift tracing exception. Thanks @dependabot! (#71)
 
 - Update the private harness Vite override to 8.3.5 after the two-day dependency cooldown.

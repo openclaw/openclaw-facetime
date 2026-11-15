@@ -1,5 +1,5 @@
 # Native components and their public contracts.
-* @openclaw/maintainer
+* @openclaw/maintainers-openclaw-org
 
 # Privileged components, distribution, and repository governance.
 /.github/ @openclaw/openclaw-secops
