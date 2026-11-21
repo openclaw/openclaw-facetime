@@ -10,7 +10,11 @@ here. Published versions are listed in
 
 - Run main CodeQL analysis on the existing weekly schedule instead of every push, preserving PR scans and independent manual runs.
 
+- Update the private Vitest harness to 5.1.1 after the two-day dependency cooldown.
+
 - Refresh the private Vitest harness to 5.1.0, pnpm setup action to 6.1.1, and paired CodeQL actions to 4.39.3 while preserving the two-day dependency cooldown and supported Node.js versions.
+
+- Stop a stuck release validate job after 30 minutes, and stop a stuck verify or publish job after 60 minutes, instead of holding the release group until the 360 minute default. Thanks @SebTardif. (#76)
 
 - Restore default code-owner review routing after the maintainer team rename.
 

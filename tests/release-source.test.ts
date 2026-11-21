@@ -23,6 +23,16 @@ describe("frozen release source", () => {
     expect(workflow).toContain('test "$(git rev-parse refs/audit/tag)" = "$TAG_OBJECT"');
   });
 
+  it("bounds validate, verify, and release", () => {
+    const validate = workflow.split("\n  validate:\n")[1].split("\n  sign:\n")[0];
+    const verify = workflow.split("\n  verify:\n")[1].split("\n  release:\n")[0];
+    const release = workflow.split("\n  release:\n")[1].split("\n  homebrew:\n")[0];
+    expect(validate).toContain("timeout-minutes: 30");
+    expect(verify).toContain("timeout-minutes: 60");
+    expect(release).toContain("timeout-minutes: 60");
+    expect(verify).not.toContain("if:");
+  });
+
   it("keeps verification available without publishing", () => {
     const verify = workflow.split("\n  verify:\n")[1].split("\n  release:\n")[0];
     expect(verify).not.toContain("if:");
