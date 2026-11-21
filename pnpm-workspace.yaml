@@ -1,3 +1,5 @@
 minimumReleaseAge: 2880
 overrides:
-  vite: 8.3.5
+  vite: 8.3.8
+  # Rolldown 1.2.19 adds WASI dependencies with prerelease emnapi packages.
+  'vite@8.3.8>rolldown': 1.2.18
