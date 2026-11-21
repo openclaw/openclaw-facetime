@@ -10,6 +10,8 @@ here. Published versions are listed in
 
 - Refresh the private development harness to pnpm 11.28.12 and Vite 8.3.8, and run CI on the November Node.js security releases (22.23.5, 24.22.3, and 26.13.1). Supported Node.js ranges and native runtime requirements are unchanged.
 
+- Run main CodeQL analysis on the existing weekly schedule instead of every push, preserving PR scans and independent manual runs.
+
 - Update the private Vitest harness to 5.1.1 after the two-day dependency cooldown.
 
 - Refresh the private Vitest harness to 5.1.0, pnpm setup action to 6.1.1, and paired CodeQL actions to 4.39.3 while preserving the two-day dependency cooldown and supported Node.js versions.
