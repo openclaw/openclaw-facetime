@@ -2,6 +2,15 @@
 
 <!-- Explain the native failure, capability, or release invariant. Link related issues.
 
+In 1–3 plain sentences, say who is affected, what happens today, and why it
+matters to them. For a bug, name the trigger if known. For a feature or internal
+work, describe the need in the actual workflow without inventing harm.
+Could a reader understand the problem without knowing your proposed fix?
+
+Good: "Background checks can use up a new user's model allowance before they've
+asked the assistant to monitor anything."
+Bad: "Turn off periodic checks on fresh installs."
+
 Start with the task someone is trying to complete, what gets in their way, and
 what this change makes possible. Write for a reader who does not know the native
 implementation; introduce helper names, protocols, and file paths after the
