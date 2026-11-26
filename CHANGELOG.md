@@ -26,6 +26,7 @@ here. Published versions are listed in
 
 - Select patched Node.js versions in the CI harness to reject the disclosed eMudhra incident keys. Thanks @joshavant. (#70)
 - Fix native release publication on macOS Bash 3.2 and allow separately signed recovery tags to finish an uncreated release from its unchanged version tag.
+- Refresh the GitHub App token action to 3.4.0 and paired CodeQL actions to 4.39.4. Thanks @dependabot! (#83)
 
 ## 0.2.0 - 2026-10-20
 
